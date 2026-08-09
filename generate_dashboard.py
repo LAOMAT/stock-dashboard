@@ -429,7 +429,7 @@ def _backtest_html(bt):
             <div class="stat-value" style="font-size:15px">{holdings}</div></div>
         {cf_html}
     </div>
-    <div id="equity" style="width: 100%; height: 260px;"></div>
+    <div id="equity" class="chart-mobile-h" style="width: 100%; height: 260px;"></div>
     <div class="bt-cols">
         <div><div class="causal-h">进化日志(参数持久化, 过拟合防护)</div><ul class="log-list">{log_rows}</ul></div>
         <div><div class="causal-h">最近交易</div>
@@ -532,7 +532,7 @@ def generate_html(heatmap_data, market_data, chan_chart, chan_text, causal, bt):
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <style>
 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Microsoft YaHei', 'Segoe UI', sans-serif; padding: 12px; max-width: 1600px; margin: 0 auto; }}
+body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Microsoft YaHei', 'Segoe UI', sans-serif; padding: 12px; max-width: 1600px; margin: 0 auto; -webkit-text-size-adjust: 100%; }}
 .header {{ text-align: center; padding: 16px 0; border-bottom: 1px solid #30363d; margin-bottom: 16px; }}
 .header h1 {{ font-size: 22px; color: #f0f6fc; font-weight: 600; }}
 .header .update-time {{ font-size: 12px; color: #8b949e; margin-top: 6px; }}
@@ -556,7 +556,7 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
 .cb-sub {{ color: #8b949e; font-size: 11px; margin-left: 8px; }}
 .chart-section, .table-section {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 16px; }}
 .chart-title {{ font-size: 15px; font-weight: 600; color: #f0f6fc; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #30363d; }}
-.chart-container {{ width: 100%; overflow-x: auto; }}
+.chart-container {{ width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }}
 .lc-legend {{ display: flex; flex-wrap: wrap; gap: 10px 16px; margin-bottom: 10px; font-size: 11px; color: #8b949e; }}
 .lc-item i {{ display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; }}
 .sec-table {{ width: 100%; border-collapse: collapse; font-size: 12px; }}
@@ -583,7 +583,46 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
 .bt-cols {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }}
 .log-list {{ font-size: 12px; color: #c9d1d9; padding-left: 18px; line-height: 1.9; }}
 .footer {{ text-align: center; font-size: 11px; color: #484f58; padding: 12px 0; }}
-@media (max-width: 768px) {{ .header h1 {{ font-size: 18px; }} .summary-value {{ font-size: 20px; }} .bt-cols {{ grid-template-columns: 1fr; }} }}
+
+/* === 移动端适配 === */
+@media (max-width: 768px) {{
+    body {{ padding: 8px; }}
+    .header h1 {{ font-size: 16px; }}
+    .header .update-time {{ font-size: 11px; }}
+    .instructions {{ padding: 10px 12px; font-size: 12px; line-height: 1.8; }}
+    .summary-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }}
+    .summary-card {{ min-width: 0; padding: 10px 8px; }}
+    .summary-label {{ font-size: 10px; }}
+    .summary-value {{ font-size: 18px; }}
+    .summary-sub {{ font-size: 10px; }}
+    .turn-note {{ padding: 6px 10px; font-size: 11px; line-height: 1.6; }}
+    .chan-banner {{ padding: 8px 10px; font-size: 12px; line-height: 1.8; }}
+    .cb-tag {{ font-size: 10px; padding: 1px 6px; margin-right: 4px; }}
+    .cb-sub {{ display: block; margin-left: 0; margin-top: 2px; font-size: 10px; }}
+    .chart-section, .table-section {{ padding: 10px; margin-bottom: 12px; }}
+    .chart-title {{ font-size: 13px; margin-bottom: 8px; padding-bottom: 6px; }}
+    .chart-container {{ overflow-x: auto; -webkit-overflow-scrolling: touch; }}
+    .lc-legend {{ gap: 6px 10px; font-size: 10px; }}
+    .sec-table {{ font-size: 11px; }}
+    .sec-table td {{ padding: 6px 4px; }}
+    .sec-chip {{ font-size: 11px; padding: 2px 6px; }}
+    .sec-chip .etf {{ font-size: 10px; }}
+    .causal-grid {{ grid-template-columns: 1fr; }}
+    .stat-card {{ min-width: 100px; padding: 8px 10px; }}
+    .stat-value {{ font-size: 16px; }}
+    .bt-cols {{ grid-template-columns: 1fr; }}
+    .footer {{ font-size: 10px; }}
+}}
+/* 手机端图表高度自适应 */
+@media (max-width: 768px) {{
+    .chart-mobile-h {{ height: 500px !important; }}
+    #equity.chart-mobile-h {{ height: 220px !important; }}
+}}
+@media (max-width: 480px) {{
+    .chart-mobile-h {{ height: 420px !important; }}
+    #equity.chart-mobile-h {{ height: 200px !important; }}
+    #heatmap {{ min-width: 900px; }}
+}}
 </style>
 </head>
 <body>
@@ -618,7 +657,7 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
 <div class="chart-section">
     <div class="chart-title">上证指数缠论结构图 (笔/中枢/买卖点/波浪 + MACD背驰 + 量柱)</div>
     <div class="chart-container">
-        <div id="chan" style="width: 100%; height: 880px;"></div>
+        <div id="chan" class="chart-mobile-h" style="width: 100%; height: 880px;"></div>
     </div>
 </div>
 
@@ -632,15 +671,15 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
 
 <div class="chart-section">
     <div class="chart-title">行业板块趋势热力图 (横截面相对强度, 单元格=得分, 黄框=资金流入/蓝框=流出)</div>
-    <div class="chart-container">
-        <div id="heatmap" style="width: 100%; height: 560px;"></div>
+    <div class="chart-container" id="heatmap-wrap">
+        <div id="heatmap" class="chart-mobile-h" style="width: 100%; height: 560px;"></div>
     </div>
 </div>
 
 <div class="chart-section">
     <div class="chart-title">市场环境监测 (K线 + MRS综合分 + 四因子分解)</div>
     <div class="chart-container">
-        <div id="market" style="width: 100%; height: 820px;"></div>
+        <div id="market" class="chart-mobile-h" style="width: 100%; height: 820px;"></div>
     </div>
 </div>
 
@@ -760,7 +799,8 @@ var equityData = {equity_json};
                splitLine: {{ show: false }} }}
         ],
         dataZoom: [
-            {{ type: 'inside', xAxisIndex: [0,1,2], start: 45, end: 100 }},
+            {{ type: 'inside', xAxisIndex: [0,1,2], start: 45, end: 100,
+               zoomOnMouseWheel: false, moveOnMouseMove: true, moveOnMouseWheel: true }},
             {{ type: 'slider', xAxisIndex: [0,1,2], bottom: 0, height: 15, start: 45, end: 100,
                borderColor: '#30363d', textStyle: {{ color: '#8b949e', fontSize: 10 }} }}
         ],
@@ -901,7 +941,8 @@ var equityData = {equity_json};
                splitLine: {{ lineStyle: {{ color: '#21262d' }} }} }}
         ],
         dataZoom: [
-            {{ type: 'inside', xAxisIndex: [0,1,2,3], start: 60, end: 100 }},
+            {{ type: 'inside', xAxisIndex: [0,1,2,3], start: 60, end: 100,
+               zoomOnMouseWheel: false, moveOnMouseMove: true, moveOnMouseWheel: true }},
             {{ type: 'slider', xAxisIndex: [0,1,2,3], bottom: 0, height: 15, start: 60, end: 100,
                borderColor: '#30363d', textStyle: {{ color: '#8b949e', fontSize: 10 }} }}
         ],
@@ -1000,6 +1041,21 @@ var equityData = {equity_json};
     chart.setOption(option);
     window.addEventListener('resize', function() {{ chart.resize(); }});
 }})();
+
+// === 移动端: 屏幕旋转/尺寸变化时强制重绘所有图表 ===
+function resizeAllCharts() {{
+    document.querySelectorAll('[_echarts_instance_]').forEach(function(el) {{
+        var inst = echarts.getInstanceByDom(el);
+        if (inst) inst.resize();
+    }});
+}}
+window.addEventListener('orientationchange', function() {{
+    setTimeout(resizeAllCharts, 300);
+}});
+// 首次加载后延迟重绘(确保移动端布局稳定)
+window.addEventListener('load', function() {{
+    setTimeout(resizeAllCharts, 500);
+}});
 </script>
 
 </body>
