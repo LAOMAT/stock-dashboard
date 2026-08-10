@@ -243,8 +243,8 @@ def compute_market_trend(index_data, margin_data, regime):
 # 指数多周期级别配置: 级别 -> (每日模拟K线根数, min_gap, 模拟取最近N天日线)
 # 大侠三绝体系: 分型->笔->中枢 在各级别独立联立, 级别间走势类型互相印证
 IDX_LEVEL_ORDER = ['日', '60min', '30min', '15min', '5min']
-IDX_LEVEL_CFG = {'日': (1, 4, None), '60min': (4, 3, 150), '30min': (8, 3, 110),
-                 '15min': (16, 2, 70), '5min': (48, 2, 42)}
+IDX_LEVEL_CFG = {'日': (1, 4, None), '60min': (4, 3, 120), '30min': (8, 3, 80),
+                 '15min': (16, 2, 40), '5min': (48, 2, 25)}
 
 
 def compute_chan_vol(index_data, index_name="上证指数"):
@@ -294,7 +294,7 @@ def compute_chan_vol(index_data, index_name="上证指数"):
             'dates': dates,
             'kline': df_lv[['open', 'close', 'low', 'high']]
                      .astype(float).round(2).values.tolist(),
-            'volume': [float(v) for v in df_lv['volume']],
+            'volume': [round(float(v)) for v in df_lv['volume']],
             'bi_line': bi_line,
             'zhongshu': res['zhongshu'],
             'trade_points': res['trade_points'],
@@ -348,13 +348,14 @@ def compute_sector_chan(sectors_data):
             h60 = ml['60min']
             m30 = ml['30min']
             # 各级别K线: 日线=原始K线, 分钟级=与analyze内部一致的模拟日内K线
+            # 展示窗口裁剪(日线近120日/60min近90日/30min近60日), 分析仍用全量数据
             k_daily = {
-                'dates': pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d').tolist(),
+                'dates': pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d').tolist()[-120:],
                 'kline': df[['open', 'close', 'low', 'high']]
-                         .astype(float).round(2).values.tolist(),
+                         .astype(float).round(2).values.tolist()[-120:],
             }
-            sim60 = chan_engine._simulate_intraday(df, 4)
-            sim30 = chan_engine._simulate_intraday(df, 8)
+            sim60 = chan_engine._simulate_intraday(df.tail(90), 4)
+            sim30 = chan_engine._simulate_intraday(df.tail(60), 8)
             k_60 = {
                 'dates': sim60['date'].astype(str).tolist(),
                 'kline': sim60[['open', 'close', 'low', 'high']]
@@ -573,6 +574,84 @@ def _backtest_html(bt):
     </div>"""
 
 
+def _compute_actions(latest, market_data, bt):
+    """策略操作计算(策略表与今日操作卡共用单一数据源)
+
+    Returns: (position, buys, per, groups, buy_delta)
+        position: 总仓位建议(如"4~6成"); buys: 启动期买入标的列表; per: 单只仓位%
+        groups: {生命周期阶段: [(板块名, 信息)]}; buy_delta: 启动阈值
+    """
+    import re
+    params = (bt or {}).get('params', {})
+    max_sectors = params.get('max_sectors', 3)
+    buy_delta = params.get('buy_delta', 5)
+    position, mid_pct = '4~6成', 50
+    if market_data:
+        position = market_data['position']
+        nums = [int(x) for x in re.findall(r'\d+', position)]
+        mid_pct = round((nums[0] + nums[1]) / 2 * 10) if len(nums) >= 2 else 50
+
+    groups = {}
+    for name, v in (latest or {}).items():
+        groups.setdefault(v['stage'], []).append((name, v))
+    for g in groups.values():
+        g.sort(key=lambda x: (x[1]['delta'], x[1]['score']), reverse=True)
+
+    buys = groups.get('启动期', [])[:max_sectors]
+    per = min(20, round(mid_pct / len(buys))) if buys else 0
+    return position, buys, per, groups, buy_delta
+
+
+def _today_card_html(latest, market_data, bt):
+    """今日操作汇总卡: 打开看板10秒知道今天干什么"""
+    if not latest or not market_data:
+        return ""
+    position, buys, per, groups, _ = _compute_actions(latest, market_data, bt)
+    mrs = market_data['latest_mrs']
+
+    def _etf(name, v):
+        return f"{v['etf_name']}" if v['etf_code'] else name
+
+    segs = [f"<span class='tc-seg'>总仓位 <b>{position}</b> (MRS {mrs:.0f})</span>"]
+    if buys:
+        txt = '、'.join(f"{_etf(n, v)}≈{per}%" for n, v in buys)
+        segs.append(f"<span class='tc-seg buy'>买入 {len(buys)}只: {txt}</span>")
+    for stage, cls, act in [('高潮期', 'tp', '止盈'), ('退潮期', 'sell', '卖出')]:
+        items = groups.get(stage, [])
+        if items:
+            segs.append(f"<span class='tc-seg {cls}'>{act}: "
+                        + '、'.join(_etf(n, v) for n, v in items) + "</span>")
+    n_wait = sum(len(groups.get(s, [])) for s in ('震荡期', '冰点期'))
+    if n_wait:
+        segs.append(f"<span class='tc-seg wait'>观望 {n_wait}个板块</span>")
+    if len(segs) == 1:
+        segs.append("<span class='tc-seg wait'>无明确操作标的, 持仓/空仓观望, 等启动期信号</span>")
+    return f"<div class='today-card'><span class='tc-title'>今日操作</span>{''.join(segs)}</div>"
+
+
+def _idx_compare_html(idx_texts):
+    """指数强弱对比条: 三指数缠论状态一览(不用切换即可横向对比)"""
+    if not idx_texts:
+        return ""
+    pos_map = {'above': ('中枢上·强', '#ef4444'), 'inside': ('中枢内·荡', '#eab308'),
+               'below': ('中枢下·弱', '#22c55e')}
+    chips = ""
+    for name, t in idx_texts.items():
+        pos_txt, pos_color = pos_map.get(t.get('cur_pos', ''), ('', '#8b949e'))
+        div = ""
+        if t.get('bottom_div'):
+            div = "<span class='cmp-div bottom'>底背驰</span>"
+        elif t.get('top_div'):
+            div = "<span class='cmp-div top'>顶背驰</span>"
+        fp = t.get('forecast_probs', {})
+        chips += (f"<div class='cmp-chip'><b>{name}</b>"
+                  f"<span style='color:{pos_color}'>{pos_txt}</span>{div}"
+                  f"<span class='cmp-prob'>攻<b style='color:#ef4444'>{fp.get('up', '-')}%</b>"
+                  f" / 荡<b style='color:#eab308'>{fp.get('range', '-')}%</b>"
+                  f" / 探<b style='color:#22c55e'>{fp.get('down', '-')}%</b></span></div>")
+    return f"<div class='cmp-strip'>{chips}</div>"
+
+
 def _etf_strategy_html(latest, market_data, bt):
     """行业ETF投资策略: 明确买卖操作与具体仓位(每日更新)
 
@@ -581,24 +660,11 @@ def _etf_strategy_html(latest, market_data, bt):
     """
     if not latest or not market_data:
         return ""
-    import re
     mrs = market_data['latest_mrs']
     zone = market_data.get('turn_zone', '')
-    position = market_data['position']                    # 如 "4~6成"
-    nums = [int(x) for x in re.findall(r'\d+', position)]
-    mid_pct = round((nums[0] + nums[1]) / 2 * 10) if len(nums) >= 2 else 50
     params = (bt or {}).get('params', {})
     max_sectors = params.get('max_sectors', 3)
-    buy_delta = params.get('buy_delta', 5)
-
-    groups = {}
-    for name, v in latest.items():
-        groups.setdefault(v['stage'], []).append((name, v))
-    for g in groups.values():
-        g.sort(key=lambda x: (x[1]['delta'], x[1]['score']), reverse=True)
-
-    buys = groups.get('启动期', [])[:max_sectors]
-    per = min(20, round(mid_pct / len(buys))) if buys else 0
+    position, buys, per, groups, buy_delta = _compute_actions(latest, market_data, bt)
 
     def _etf(name, v):
         return f"{v['etf_name']}({v['etf_code']})" if v['etf_code'] else name
@@ -695,13 +761,18 @@ def generate_html(heatmap_data, market_data, idx_charts, idx_texts,
         <b style='color:#f87171'>向下跌破60/45/30=逐级减仓信号(红▼)</b>;
         区间划分: ≥75进攻 | 60-75偏多 | 45-60震荡 | 30-45防守 | &lt;30空仓。{st_txt}</div>{div_badge}"""
 
-    # ---- 缠论/量柱/结构推演状态横幅(可复用于多指数) ----
+    # ---- 今日操作汇总卡 + 指数强弱对比条(摘要区) ----
+    summary_html += _today_card_html(heatmap_data['latest'] if heatmap_data else None,
+                                     market_data, bt)
+    summary_html += _idx_compare_html(idx_texts)
+
+    # ---- 缠论/量柱/结构推演状态横幅(可复用于多指数, 单行精简版) ----
     def _chan_banner_html(ct, chart_id_prefix=''):
         vs = ct['vol_summary']
         fp = ct['forecast_probs']
         div_cls = 'top' if ct['top_div'] else ('bottom' if ct['bottom_div'] else '')
         name = ct.get('index_name', '上证指数')
-        # 结构事件列表
+        # 结构事件列表(折叠明细)
         structs = ct.get('forecast_structures', {})
         struct_html = ""
         for path_key, path_label, color in [('up', '上攻', '#ef4444'),
@@ -712,23 +783,17 @@ def generate_html(heatmap_data, market_data, idx_charts, idx_texts,
                 items = ''.join(f'<li>{e}</li>' for e in events)
                 struct_html += (f"<div class='fc-path'><b style='color:{color}'>"
                                 f"{path_label} {fp[path_key]}%</b><ul>{items}</ul></div>")
-        # 当前信号
-        sig_html = ""
         sigs = ct.get('forecast_signals', [])
-        if sigs:
-            sig_html = f"<div class='fc-signals'>当前信号: {'; '.join(sigs)}</div>"
+        sig_txt = f" | 信号: {'; '.join(sigs)}" if sigs else ""
         return f"""
         <div class='chan-banner {div_cls}'>
-            <div><span class='cb-tag'>{name}缠论</span>{ct['chan_state']}</div>
-            <div><span class='cb-tag'>量柱</span>{vs['recent_msg']} | {vs['support_txt']}
-            <span class='cb-sub'>(倍量{vs['bei_count']} 高量{vs['gao_count']} 低量{vs['di_count']} 黄金/将军{vs['golden_count']})</span></div>
-            <div><span class='cb-tag'>推演</span>未来15日:
-            <b style='color:#ef4444'>上攻 {fp['up']}%</b> ·
-            <b style='color:#eab308'>震荡 {fp['range']}%</b> ·
-            <b style='color:#22c55e'>下探 {fp['down']}%</b>
-            <span class='cb-sub'>{ct['forecast_basis']}</span></div>
-            {sig_html}
-            <div class='fc-structures'>{struct_html}</div>
+            <div class='cb-line'><span class='cb-tag'>{name}</span>{ct['chan_state']}
+            <span class='cb-sep'>|</span><span class='cb-tag'>量柱</span>{vs['recent_msg']}·{vs['support_txt']}
+            <span class='cb-sep'>|</span><span class='cb-tag'>推演</span>
+            <b style='color:#ef4444'>攻{fp['up']}%</b>·<b style='color:#eab308'>荡{fp['range']}%</b>·<b style='color:#22c55e'>探{fp['down']}%</b>{sig_txt}</div>
+            <details class='cb-detail'><summary>结构事件明细与推演依据</summary>
+            <div class='cb-sub' style='margin:4px 0'>{ct['forecast_basis']}</div>
+            <div class='fc-structures'>{struct_html}</div></details>
         </div>"""
 
     idx_banners = {name: _chan_banner_html(t) for name, t in idx_texts.items()}
@@ -751,7 +816,7 @@ def generate_html(heatmap_data, market_data, idx_charts, idx_texts,
     if sector_chan:
         sector_chan_section = """
 <div class="chart-section" id="sector-chan">
-    <div class="chart-title">行业板块多周期缠论结构 (日线/60min/30min 联立: 笔·中枢·买卖点·背驰)</div>
+    <div class="chart-title"><span class="mod-badge alt">进阶 · 行业结构</span>行业板块多周期缠论结构 (日线/60min/30min 联立: 笔·中枢·买卖点·背驰)</div>
     <div class="sc-controls">
         <select id="sc-sector" class="sc-select"></select>
         <div class="sc-level-btns">
@@ -867,6 +932,32 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
 .sc-div.bottom {{ background: rgba(34,197,94,0.15); color: #4ade80; }}
 .footer {{ text-align: center; font-size: 11px; color: #484f58; padding: 12px 0; }}
 
+/* === 今日操作汇总卡 === */
+.today-card {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 10px 14px; margin: -4px 0 12px; font-size: 13px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }}
+.tc-title {{ font-weight: 700; color: #fff; background: #1f6feb; border-radius: 4px; padding: 2px 10px; font-size: 12px; white-space: nowrap; }}
+.tc-seg {{ color: #c9d1d9; }}
+.tc-seg b {{ color: #f0f6fc; }}
+.tc-seg.buy, .tc-seg.buy b {{ color: #f87171; }}
+.tc-seg.tp {{ color: #c084fc; }}
+.tc-seg.sell {{ color: #60a5fa; }}
+.tc-seg.wait {{ color: #8b949e; }}
+/* === 指数强弱对比条 === */
+.cmp-strip {{ display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }}
+.cmp-chip {{ flex: 1; min-width: 210px; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 8px 12px; font-size: 12px; color: #c9d1d9; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }}
+.cmp-chip > b {{ color: #f0f6fc; font-size: 13px; }}
+.cmp-div {{ padding: 1px 8px; border-radius: 4px; font-weight: 600; font-size: 11px; }}
+.cmp-div.bottom {{ background: rgba(34,197,94,0.15); color: #4ade80; }}
+.cmp-div.top {{ background: rgba(239,68,68,0.15); color: #f87171; }}
+.cmp-prob {{ color: #8b949e; font-size: 11px; }}
+/* === 单行精简横幅 === */
+.cb-line {{ line-height: 1.9; }}
+.cb-sep {{ color: #30363d; margin: 0 8px; }}
+.cb-detail {{ margin-top: 4px; }}
+.cb-detail summary {{ cursor: pointer; color: #58a6ff; font-size: 12px; outline: none; }}
+/* === 模块序号徽章 === */
+.mod-badge {{ display: inline-block; background: #1f6feb; color: #fff; font-size: 11px; font-weight: 700; border-radius: 4px; padding: 2px 8px; margin-right: 8px; vertical-align: 2px; }}
+.mod-badge.alt {{ background: #30363d; color: #8b949e; }}
+
 /* === 移动端适配 === */
 @media (max-width: 768px) {{
     body {{ padding: 8px; }}
@@ -895,8 +986,15 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
     .stat-value {{ font-size: 16px; }}
     .bt-cols {{ grid-template-columns: 1fr; }}
     .sc-select {{ font-size: 12px; }}
-    .sc-level-btn {{ padding: 4px 10px; font-size: 11px; }}
+    .sc-controls {{ flex-wrap: wrap; gap: 6px; }}
+    .sc-level-btns {{ gap: 4px; flex-wrap: wrap; }}
+    .sc-level-btn {{ padding: 3px 9px; font-size: 10px; }}
     .sc-state {{ font-size: 11px; padding: 6px 8px; }}
+    .today-card {{ font-size: 12px; gap: 4px 10px; padding: 8px 10px; }}
+    .cmp-strip {{ gap: 6px; }}
+    .cmp-chip {{ min-width: 0; font-size: 11px; gap: 6px; padding: 6px 8px; }}
+    .cb-sep {{ margin: 0 4px; }}
+    .mod-badge {{ font-size: 10px; padding: 1px 6px; margin-right: 5px; }}
     .footer {{ font-size: 10px; }}
 }}
 /* 手机端图表高度自适应 */
@@ -940,14 +1038,14 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
 {summary_html}
 
 <div class="chart-section">
-    <div class="chart-title">市场环境监测 (K线 + MRS综合分 + 四因子分解)</div>
+    <div class="chart-title"><span class="mod-badge">第一步 · 定仓位</span>市场环境监测 (K线 + MRS综合分 + 四因子分解)</div>
     <div class="chart-container">
         <div id="market" class="chart-mobile-h" style="width: 100%; height: 820px;"></div>
     </div>
 </div>
 
 <div class="chart-section">
-    <div class="chart-title">指数多周期缠论结构图 (指数切换 × 日/60/30/15/5分钟联立: 笔/中枢/买卖点/波浪 + MACD背驰 + 结构推演虚线)</div>
+    <div class="chart-title"><span class="mod-badge">第二步 · 看大盘</span>指数多周期缠论结构图 (指数切换 × 日/60/30/15/5分钟联立: 笔/中枢/买卖点/波浪 + MACD背驰 + 结构推演虚线)</div>
     <div class="sc-controls">
         <div class="sc-level-btns" id="idx-index-btns">{idx_buttons}</div>
         <div class="sc-level-btns" id="idx-level-btns">
@@ -966,7 +1064,7 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
 </div>
 
 <div class="chart-section" id="etf-strategy">
-    <div class="chart-title">行业ETF投资策略 <span style="font-size:12px;color:#8b949e;font-weight:400">每日更新 · 明确买卖策略与具体仓位</span></div>
+    <div class="chart-title"><span class="mod-badge">第三步 · 选行业</span>行业ETF投资策略 <span style="font-size:12px;color:#8b949e;font-weight:400">每日更新 · 明确买卖策略与具体仓位</span></div>
     {strategy_html}
     <div class="sub-title">板块生命周期全景</div>
     {legend}
@@ -1397,11 +1495,12 @@ createIdxChanChart('chan', 'idx-index-btns', 'idx-level-btns',
         visualMap: {{
             min: 0, max: 100, calculable: true, orient: 'horizontal', left: 'center', bottom: 10,
             textStyle: {{ color: '#8b949e', fontSize: 11 }},
-            inRange: {{ color: ['#006400', '#228B22', '#7CCD7C', '#FFFF00', '#FFA500', '#FF6347', '#DC143C'] }}
+            inRange: {{ color: ['#14532d', '#22c55e', '#a3e635', '#eab308', '#f97316', '#ef4444', '#dc2626'] }}
         }},
         series: [{{
             name: '趋势得分', type: 'heatmap', data: data,
             label: {{ show: true, fontSize: 10, color: '#fff', fontWeight: 'bold' }},
+            itemStyle: {{ borderColor: '#0d1117', borderWidth: 2, borderRadius: 4 }},
             emphasis: {{ itemStyle: {{ shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.5)' }} }}
         }}]
     }};
