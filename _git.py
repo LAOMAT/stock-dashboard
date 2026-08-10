@@ -2,7 +2,7 @@
 import subprocess
 cwd = r'd:\Trae的工作空间\刺痛说'
 for cmd in [['git','add','-A'],
-            ['git','commit','-m','移动端适配: 响应式布局+图表高度自适应+触摸滑动+热力图横向滚动'],
+            ['git','commit','-m','缠论结构推演精细化+创业板指缠论分析'],
             ['git','push']]:
     r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
     label = ' '.join(cmd)

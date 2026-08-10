@@ -56,7 +56,14 @@ def fetch_all_data():
     print("=" * 60)
     global_indices = data_fetcher.get_global_indices(days=300)
 
-    return sectors_data, index_data, margin_data, global_indices
+    print("\n" + "=" * 60)
+    print("步骤4b: 获取创业板指K线数据")
+    print("=" * 60)
+    cyb_data = data_fetcher.get_index_kline("sz399006", days=400)
+    if len(cyb_data) > 0:
+        print(f"  获取成功: {len(cyb_data)}条, 最新日期={cyb_data.iloc[-1]['date'].strftime('%Y-%m-%d')}")
+
+    return sectors_data, index_data, margin_data, global_indices, cyb_data
 
 
 def compute_sector_heatmap(sectors_data, num_days=18):
@@ -207,10 +214,10 @@ def compute_market_trend(index_data, margin_data, regime):
     }
 
 
-def compute_chan_vol(index_data):
-    """缠论结构 + 量柱分析(作用于上证指数全历史)"""
-    print("\n" + "=" * 60)
-    print("步骤7: 缠论结构分析 + 量柱分析")
+def compute_chan_vol(index_data, index_name="上证指数"):
+    """缠论结构 + 量柱分析(可作用于任意指数)"""
+    print(f"\n{'=' * 60}")
+    print(f"步骤7: {index_name}缠论结构分析 + 量柱分析")
     print("=" * 60)
 
     chan = chan_engine.analyze(index_data)
@@ -227,6 +234,8 @@ def compute_chan_vol(index_data):
     print(f"  量柱: {vol['summary']['recent_msg']} | {vol['summary']['support_txt']}")
     print(f"  推演: 上攻{forecast['probs']['up']}% / 震荡{forecast['probs']['range']}% / "
           f"下探{forecast['probs']['down']}% | {forecast['basis']}")
+    if forecast.get('signals'):
+        print(f"  结构信号: {'; '.join(forecast['signals'])}")
 
     chart = {
         'dates': dates,
@@ -243,6 +252,7 @@ def compute_chan_vol(index_data):
         'forecast': forecast,
     }
     text = {
+        'index_name': index_name,
         'chan_state': chan['state_text'],
         'bottom_div': chan['bottom_div'],
         'top_div': chan['top_div'],
@@ -250,6 +260,9 @@ def compute_chan_vol(index_data):
         'vol_summary': vol['summary'],
         'forecast_probs': forecast['probs'],
         'forecast_basis': forecast['basis'],
+        'forecast_structures': forecast.get('structures', {}),
+        'forecast_signals': forecast.get('signals', []),
+        'cur_pos': forecast.get('cur_pos', ''),
     }
     return chart, text
 
@@ -439,7 +452,8 @@ def _backtest_html(bt):
 </div>"""
 
 
-def generate_html(heatmap_data, market_data, chan_chart, chan_text, causal, bt):
+def generate_html(heatmap_data, market_data, chan_chart, chan_text,
+                  cyb_chart, cyb_text, causal, bt):
     """生成HTML看板"""
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -491,23 +505,44 @@ def generate_html(heatmap_data, market_data, chan_chart, chan_text, causal, bt):
         <b>斜率由负转正(&lt;45)=加仓窗口, 由正转负(&gt;55)=减仓窗口</b>;
         图中▲=历史低位回升点 ▼=历史高位回落点。{st_txt}</div>{div_badge}"""
 
-    # ---- 缠论/量柱状态横幅 ----
-    chan_banner = ""
-    if chan_text:
-        vs = chan_text['vol_summary']
-        fp = chan_text['forecast_probs']
-        div_cls = 'top' if chan_text['top_div'] else ('bottom' if chan_text['bottom_div'] else '')
-        chan_banner = f"""
+    # ---- 缠论/量柱/结构推演状态横幅(可复用于多指数) ----
+    def _chan_banner_html(ct, chart_id_prefix=''):
+        vs = ct['vol_summary']
+        fp = ct['forecast_probs']
+        div_cls = 'top' if ct['top_div'] else ('bottom' if ct['bottom_div'] else '')
+        name = ct.get('index_name', '上证指数')
+        # 结构事件列表
+        structs = ct.get('forecast_structures', {})
+        struct_html = ""
+        for path_key, path_label, color in [('up', '上攻', '#ef4444'),
+                                              ('range', '震荡', '#eab308'),
+                                              ('down', '下探', '#22c55e')]:
+            events = structs.get(path_key, [])
+            if events:
+                items = ''.join(f'<li>{e}</li>' for e in events)
+                struct_html += (f"<div class='fc-path'><b style='color:{color}'>"
+                                f"{path_label} {fp[path_key]}%</b><ul>{items}</ul></div>")
+        # 当前信号
+        sig_html = ""
+        sigs = ct.get('forecast_signals', [])
+        if sigs:
+            sig_html = f"<div class='fc-signals'>当前信号: {'; '.join(sigs)}</div>"
+        return f"""
         <div class='chan-banner {div_cls}'>
-            <div><span class='cb-tag'>缠论</span>{chan_text['chan_state']}</div>
+            <div><span class='cb-tag'>{name}缠论</span>{ct['chan_state']}</div>
             <div><span class='cb-tag'>量柱</span>{vs['recent_msg']} | {vs['support_txt']}
             <span class='cb-sub'>(倍量{vs['bei_count']} 高量{vs['gao_count']} 低量{vs['di_count']} 黄金/将军{vs['golden_count']})</span></div>
             <div><span class='cb-tag'>推演</span>未来15日:
             <b style='color:#ef4444'>上攻 {fp['up']}%</b> ·
             <b style='color:#eab308'>震荡 {fp['range']}%</b> ·
             <b style='color:#22c55e'>下探 {fp['down']}%</b>
-            <span class='cb-sub'>{chan_text['forecast_basis']}</span></div>
+            <span class='cb-sub'>{ct['forecast_basis']}</span></div>
+            {sig_html}
+            <div class='fc-structures'>{struct_html}</div>
         </div>"""
+
+    chan_banner = _chan_banner_html(chan_text) if chan_text else ""
+    cyb_banner = _chan_banner_html(cyb_text) if cyb_text else ""
 
     sector_table = _sector_table_html(heatmap_data['latest']) if heatmap_data else ""
     legend = _lifecycle_legend_html()
@@ -521,6 +556,7 @@ def generate_html(heatmap_data, market_data, chan_chart, chan_text, causal, bt):
     heatmap_json = json.dumps(heatmap_for_json, ensure_ascii=False) if heatmap_for_json else "null"
     market_json = json.dumps(market_data, ensure_ascii=False) if market_data else "null"
     chan_json = json.dumps(chan_chart, ensure_ascii=False) if chan_chart else "null"
+    cyb_json = json.dumps(cyb_chart, ensure_ascii=False) if cyb_chart else "null"
     equity_json = json.dumps(bt['equity'], ensure_ascii=False) if bt else "null"
 
     html = f"""<!DOCTYPE html>
@@ -554,6 +590,11 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
 .chan-banner.bottom {{ border-color: #22c55e; }}
 .cb-tag {{ display: inline-block; background: #21262d; color: #58a6ff; border-radius: 4px; padding: 1px 8px; font-size: 11px; font-weight: 600; margin-right: 8px; }}
 .cb-sub {{ color: #8b949e; font-size: 11px; margin-left: 8px; }}
+.fc-signals {{ margin-top: 4px; font-size: 12px; color: #58a6ff; }}
+.fc-structures {{ display: flex; gap: 16px; margin-top: 8px; flex-wrap: wrap; }}
+.fc-path {{ flex: 1; min-width: 200px; }}
+.fc-path ul {{ padding-left: 16px; margin: 4px 0 0 0; }}
+.fc-path li {{ font-size: 11px; color: #b1bac4; line-height: 1.7; list-style: disc; }}
 .chart-section, .table-section {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 16px; }}
 .chart-title {{ font-size: 15px; font-weight: 600; color: #f0f6fc; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #30363d; }}
 .chart-container {{ width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }}
@@ -655,9 +696,18 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
 {chan_banner}
 
 <div class="chart-section">
-    <div class="chart-title">上证指数缠论结构图 (笔/中枢/买卖点/波浪 + MACD背驰 + 量柱)</div>
+    <div class="chart-title">上证指数缠论结构图 (笔/中枢/买卖点/波浪 + MACD背驰 + 量柱 + 结构推演虚线)</div>
     <div class="chart-container">
         <div id="chan" class="chart-mobile-h" style="width: 100%; height: 880px;"></div>
+    </div>
+</div>
+
+{cyb_banner}
+
+<div class="chart-section">
+    <div class="chart-title">创业板指缠论结构图 (笔/中枢/买卖点/波浪 + MACD背驰 + 量柱 + 结构推演虚线)</div>
+    <div class="chart-container">
+        <div id="cyb" class="chart-mobile-h" style="width: 100%; height: 880px;"></div>
     </div>
 </div>
 
@@ -696,6 +746,7 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
 var heatmapData = {heatmap_json};
 var marketData = {market_json};
 var chanData = {chan_json};
+var cybData = {cyb_json};
 var equityData = {equity_json};
 
 // ===== 图0: 上证指数缠论结构图 =====
@@ -840,6 +891,150 @@ var equityData = {equity_json};
                lineStyle: {{ color: '#818cf8', width: 1 }} }},
             {{ name: 'MACD柱', type: 'bar', xAxisIndex: 1, yAxisIndex: 1,
                data: chanData.macd.hist.map(function(v) {{
+                   return {{ value: v, itemStyle: {{ color: v >= 0 ? '#ef4444' : '#22c55e' }} }};
+               }}) }},
+            {{ name: '成交量', type: 'bar', xAxisIndex: 2, yAxisIndex: 2, data: volBars }}
+        ]
+    }};
+    chart.setOption(option);
+    window.addEventListener('resize', function() {{ chart.resize(); }});
+}})();
+
+// ===== 图0b: 创业板指缠论结构图(与上证同逻辑) =====
+(function() {{
+    if (!cybData) return;
+    var chart = echarts.init(document.getElementById('cyb'));
+    var histLen = cybData.dates.length;
+    var fc = cybData.forecast;
+    var dates = cybData.dates.concat(fc.future_dates);
+
+    function forecastLine(path, name, color, prob) {{
+        return {{
+            name: name, type: 'line', xAxisIndex: 0, yAxisIndex: 0,
+            data: new Array(histLen - 1).fill(null).concat(path),
+            symbol: 'none', smooth: true,
+            lineStyle: {{ color: color, width: 1.8, type: 'dashed' }},
+            itemStyle: {{ color: color }},
+            endLabel: {{ show: true, formatter: name + ' ' + prob + '%',
+                         color: color, fontSize: 12, fontWeight: 'bold', distance: 6 }},
+            z: 18
+        }};
+    }}
+
+    var zsAreas = cybData.zhongshu.map(function(z) {{
+        return [
+            {{ xAxis: z.start_date, yAxis: z.zd,
+               itemStyle: {{ color: 'rgba(88,166,255,0.10)', borderColor: '#58a6ff', borderWidth: 1 }},
+               label: {{ show: false }} }},
+            {{ xAxis: z.end_date, yAxis: z.zg }}
+        ];
+    }});
+    zsAreas.push([
+        {{ xAxis: cybData.dates[histLen - 1],
+           itemStyle: {{ color: 'rgba(139,148,158,0.06)' }},
+           label: {{ show: true, formatter: '推演区', color: '#8b949e',
+                     fontSize: 10, position: 'insideTop' }} }},
+        {{ xAxis: fc.future_dates[fc.future_dates.length - 1] }}
+    ]);
+
+    var tpBuy = [], tpSell = [];
+    cybData.trade_points.forEach(function(t) {{
+        var item = {{ value: [t.date, t.price], label: {{ formatter: t.label }} }};
+        if (t.label.indexOf('买') >= 0) tpBuy.push(item); else tpSell.push(item);
+    }});
+    var wavePts = cybData.waves.map(function(w) {{
+        return {{ value: [w.date, w.price], label: {{ formatter: w.label }} }};
+    }});
+
+    var pillarColors = {{
+        '倍量柱': '#f97316', '高量柱': '#eab308', '低量柱': '#22c55e',
+        '黄金柱': '#ffd700', '将军柱': '#ff6b6b'
+    }};
+    var volBars = cybData.volume.map(function(v, i) {{
+        var kind = cybData.pillars[i];
+        var color;
+        if (kind && pillarColors[kind]) {{
+            color = pillarColors[kind];
+        }} else {{
+            var k = cybData.kline[i];
+            color = k[1] >= k[0] ? 'rgba(239,68,68,0.55)' : 'rgba(34,197,94,0.55)';
+        }}
+        return {{ value: v, itemStyle: {{ color: color }} }};
+    }});
+
+    var option = {{
+        tooltip: {{ trigger: 'axis', axisPointer: {{ type: 'cross' }},
+            backgroundColor: 'rgba(22,27,34,0.95)', borderColor: '#30363d',
+            textStyle: {{ color: '#c9d1d9', fontSize: 12 }} }},
+        axisPointer: {{ link: [{{ xAxisIndex: 'all' }}] }},
+        legend: {{ top: 0, textStyle: {{ color: '#8b949e', fontSize: 10 }},
+            data: ['K线', '笔', 'DIF', 'DEA', 'MACD柱', '成交量',
+                   '推演-上攻', '推演-震荡', '推演-下探'] }},
+        grid: [
+            {{ top: 30, height: '42%', left: 60, right: 115 }},
+            {{ top: '56%', height: '14%', left: 60, right: 115 }},
+            {{ top: '74%', height: '12%', left: 60, right: 115 }}
+        ],
+        xAxis: [
+            {{ gridIndex: 0, type: 'category', data: dates, show: false }},
+            {{ gridIndex: 1, type: 'category', data: dates, show: false }},
+            {{ gridIndex: 2, type: 'category', data: dates,
+               axisLabel: {{ color: '#8b949e', fontSize: 10 }},
+               axisLine: {{ lineStyle: {{ color: '#30363d' }} }} }}
+        ],
+        yAxis: [
+            {{ gridIndex: 0, scale: true, position: 'right',
+               axisLabel: {{ color: '#8b949e', fontSize: 10 }},
+               splitLine: {{ lineStyle: {{ color: '#21262d' }} }} }},
+            {{ gridIndex: 1, scale: true, position: 'right',
+               axisLabel: {{ color: '#8b949e', fontSize: 10 }},
+               splitLine: {{ lineStyle: {{ color: '#21262d' }} }} }},
+            {{ gridIndex: 2, scale: true, position: 'right',
+               axisLabel: {{ color: '#8b949e', fontSize: 10 }},
+               splitLine: {{ show: false }} }}
+        ],
+        dataZoom: [
+            {{ type: 'inside', xAxisIndex: [0,1,2], start: 45, end: 100,
+               zoomOnMouseWheel: false, moveOnMouseMove: true, moveOnMouseWheel: true }},
+            {{ type: 'slider', xAxisIndex: [0,1,2], bottom: 0, height: 15, start: 45, end: 100,
+               borderColor: '#30363d', textStyle: {{ color: '#8b949e', fontSize: 10 }} }}
+        ],
+        series: [
+            {{ name: 'K线', type: 'candlestick', xAxisIndex: 0, yAxisIndex: 0,
+               data: cybData.kline,
+               itemStyle: {{ color: '#ef4444', color0: '#22c55e',
+                             borderColor: '#ef4444', borderColor0: '#22c55e' }},
+               markArea: {{ silent: true, data: zsAreas }} }},
+            {{ name: '笔', type: 'line', xAxisIndex: 0, yAxisIndex: 0,
+               data: cybData.bi_line, connectNulls: true, symbol: 'circle', symbolSize: 5,
+               lineStyle: {{ color: '#58a6ff', width: 1.8 }},
+               itemStyle: {{ color: '#58a6ff' }}, z: 10 }},
+            {{ name: '买点', type: 'scatter', xAxisIndex: 0, yAxisIndex: 0, data: tpBuy,
+               symbol: 'triangle', symbolSize: 16,
+               itemStyle: {{ color: '#ff2d2d' }},
+               label: {{ show: true, position: 'bottom', color: '#ff8080',
+                         fontSize: 11, fontWeight: 'bold' }}, z: 20 }},
+            {{ name: '卖点', type: 'scatter', xAxisIndex: 0, yAxisIndex: 0, data: tpSell,
+               symbol: 'triangle', symbolRotate: 180, symbolSize: 16,
+               itemStyle: {{ color: '#00e676' }},
+               label: {{ show: true, position: 'top', color: '#69f0ae',
+                         fontSize: 11, fontWeight: 'bold' }}, z: 20 }},
+            {{ name: '波浪', type: 'scatter', xAxisIndex: 0, yAxisIndex: 0, data: wavePts,
+               symbol: 'circle', symbolSize: 8,
+               itemStyle: {{ color: '#c084fc', borderColor: '#fff', borderWidth: 1 }},
+               label: {{ show: true, position: 'top', color: '#c084fc',
+                         fontSize: 12, fontWeight: 'bold' }}, z: 15 }},
+            forecastLine(fc.paths.up, '推演-上攻', '#ef4444', fc.probs.up),
+            forecastLine(fc.paths.range, '推演-震荡', '#eab308', fc.probs.range),
+            forecastLine(fc.paths.down, '推演-下探', '#22c55e', fc.probs.down),
+            {{ name: 'DIF', type: 'line', xAxisIndex: 1, yAxisIndex: 1,
+               data: cybData.macd.dif, symbol: 'none',
+               lineStyle: {{ color: '#f59e0b', width: 1 }} }},
+            {{ name: 'DEA', type: 'line', xAxisIndex: 1, yAxisIndex: 1,
+               data: cybData.macd.dea, symbol: 'none',
+               lineStyle: {{ color: '#818cf8', width: 1 }} }},
+            {{ name: 'MACD柱', type: 'bar', xAxisIndex: 1, yAxisIndex: 1,
+               data: cybData.macd.hist.map(function(v) {{
                    return {{ value: v, itemStyle: {{ color: v >= 0 ? '#ef4444' : '#22c55e' }} }};
                }}) }},
             {{ name: '成交量', type: 'bar', xAxisIndex: 2, yAxisIndex: 2, data: volBars }}
@@ -1070,7 +1265,7 @@ def main():
     print("=" * 60)
     print()
 
-    sectors_data, index_data, margin_data, global_indices = fetch_all_data()
+    sectors_data, index_data, margin_data, global_indices, cyb_data = fetch_all_data()
     if not sectors_data:
         print("\n错误: 无法获取行业板块数据，请检查网络连接")
         return
@@ -1087,8 +1282,11 @@ def main():
 
     market_data = compute_market_trend(index_data, margin_data, regime_full)
 
-    # --- 缠论 + 量柱 ---
-    chan_chart, chan_text = compute_chan_vol(index_data)
+    # --- 缠论 + 量柱 (上证 + 创业板) ---
+    chan_chart, chan_text = compute_chan_vol(index_data, "上证指数")
+    cyb_chart, cyb_text = (None, None)
+    if cyb_data is not None and len(cyb_data) > 0:
+        cyb_chart, cyb_text = compute_chan_vol(cyb_data, "创业板指")
 
     # --- 因果推导 ---
     causal = compute_causal(index_data, margin_data, global_indices, regime_full)
@@ -1100,7 +1298,8 @@ def main():
     print("\n" + "=" * 60)
     print("步骤10: 生成HTML看板")
     print("=" * 60)
-    html = generate_html(heatmap_data, market_data, chan_chart, chan_text, causal, bt)
+    html = generate_html(heatmap_data, market_data, chan_chart, chan_text,
+                         cyb_chart, cyb_text, causal, bt)
 
     with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
         f.write(html)

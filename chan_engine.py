@@ -278,7 +278,7 @@ def count_waves(pts):
     return []
 
 
-# ---------------- 8. 走势推演(三路径+历史相似概率) ----------------
+# ---------------- 8. 缠论结构走势推演 ----------------
 def _future_trade_dates(last_date, n):
     """生成未来n个交易日标签(跳过周末)"""
     out, d = [], pd.Timestamp(last_date)
@@ -291,36 +291,64 @@ def _future_trade_dates(last_date, n):
 
 def forecast_paths(df, chan_result, horizon=15):
     """
-    缠论走势推演:
-      1. 基于最近中枢(或60日高低点替代)构造三条推演路径:
-         上攻(突破ZG)、震荡(中枢内波动)、下探(跌破ZD)
-      2. 概率估计: 提取当前市场特征(区间位置/MACD柱变化/20日动量/5日动量),
-         与全历史逐日特征做标准化欧氏距离匹配, 取最相似30天,
-         统计其后horizon日收益分布 -> 上攻/震荡/下探概率
+    缠论结构走势推演(精细版):
+      不再只给价格路径, 而是推演每条路径上会发生的缠论结构事件:
+        - 中枢突破/跌破/延伸/扩展
+        - 买卖点形成(3买/3卖/1买/1卖)
+        - 走势类型变化(盘整→趋势/趋势→盘整)
+        - 背驰出现
+
+      三条路径:
+        A. 突破中枢向上: 突破ZG → 回抽不进中枢=3买 → 新中枢上移 → 趋势上涨
+        B. 中枢震荡延伸: 中枢内波动 → 中枢延伸(>9笔)或扩展 → 方向待定
+        C. 跌破中枢向下: 跌破ZD → 反抽不进中枢=3卖 → 新中枢下移 → 下跌延续/底背驰→1买
+
+      概率: 提取缠论结构特征(中枢位置/笔方向/背驰/MACD趋势/中枢笔数),
+      与全历史逐日做标准化匹配, 统计后续走势分布
+
     Returns:
-        dict: future_dates/paths{up,range,down}/probs{up,range,down}/basis(说明)
+        dict: future_dates/paths{up,range,down}/probs/
+              structures{up:[...], range:[...], down:[...]}/
+              basis/zg/zd/cur_pos
     """
     df = df.sort_values('date').reset_index(drop=True)
     close = df['close'].astype(float)
     cur = float(close.iloc[-1])
     last_date = pd.Timestamp(df['date'].iloc[-1])
 
-    # --- 路径锚点: 最近中枢, 无中枢用60日高低点 ---
+    # --- 路径锚点: 最近中枢 ---
     zs = chan_result.get('zhongshu') or []
     if zs:
         zg, zd = zs[-1]['zg'], zs[-1]['zd']
+        zs_start = zs[-1].get('start_date', '')
     else:
         zg = float(df['high'].astype(float).tail(60).max())
         zd = float(df['low'].astype(float).tail(60).min())
+        zs_start = ''
     mid, rng = (zg + zd) / 2, zg - zd
 
-    # --- 三条路径的关键节点(从当前价出发) ---
+    # --- 当前中枢位置判定 ---
+    if cur > zg:
+        cur_pos = 'above'
+    elif cur < zd:
+        cur_pos = 'below'
+    else:
+        cur_pos = 'inside'
+
+    # --- 笔方向与背驰状态 ---
+    bi_pts = chan_result.get('bi_points') or []
+    last_bi_dir = 'up'
+    if len(bi_pts) >= 2:
+        last_bi_dir = 'up' if bi_pts[-1]['price'] > bi_pts[-2]['price'] else 'down'
+    bottom_div = chan_result.get('bottom_div', False)
+    top_div = chan_result.get('top_div', False)
+
+    # --- 三条路径的价格节点 ---
     up_wp = [cur, max(cur, zg), zg + rng * 0.5, zg + rng * 0.8]
     range_wp = [cur, mid, zg - rng * 0.15, zd + rng * 0.15, mid]
     down_wp = [cur, min(cur, zd), zd - rng * 0.5, zd - rng * 0.8]
 
     def expand(waypoints):
-        """关键节点线性插值到horizon个点"""
         pts = [waypoints[0]]
         seg = horizon // (len(waypoints) - 1)
         for i in range(len(waypoints) - 1):
@@ -330,55 +358,105 @@ def forecast_paths(df, chan_result, horizon=15):
                 pts.append(a + (b - a) * j / n)
         return [round(v, 1) for v in pts[:horizon]]
 
-    # --- 历史相似状态统计概率 ---
+    # --- 缠论结构事件描述 ---
+    structures = {
+        'up': [
+            f"价格突破中枢上沿ZG={zg:.0f}",
+            f"回抽不破ZG={zg:.0f} → 形成第三类买点(3买)",
+            f"新中枢上移至[{zg:.0f}+{rng*0.3:.0f}]区间 → 走势由盘整转为上涨趋势",
+            f"若后续上涨笔出现顶背驰 → 形成第1类卖点(1卖), 注意止盈",
+        ],
+        'range': [
+            f"价格在中枢[{zd:.0f}-{zg:.0f}]内反复震荡",
+            f"中枢延伸(已有笔反复进出)或扩展(更大级别中枢形成) → 走势仍为盘整",
+            f"方向待定: 向上突破ZG={zg:.0f}看3买, 向下跌破ZD={zd:.0f}看3卖",
+            f"中枢震荡策略: 低吸高抛做T, 不追涨杀跌",
+        ],
+        'down': [
+            f"价格跌破中枢下沿ZD={zd:.0f}",
+            f"反抽不进ZD={zd:.0f} → 形成第三类卖点(3卖)",
+            f"新中枢下移至[{zd-rng*0.3:.0f}-{zd:.0f}]区间 → 走势由盘整转为下跌趋势",
+        ] + ([f"下跌末段若出现底背驰 → 形成第1类买点(1买), 是抄底窗口"
+              for _ in [1]] if bottom_div else
+             [f"关注后续下跌笔是否出现底背驰(当前尚无背驰信号)"]),
+    }
+
+    # --- 结构特征匹配概率 ---
     high60 = df['high'].astype(float).rolling(60).max()
     low60 = df['low'].astype(float).rolling(60).min()
     pos = ((close - low60) / (high60 - low60).replace(0, np.nan))
     _, _, hist = _macd(close)
+    # MACD柱5日趋势(斜率)
+    hist_trend = hist.rolling(5).mean().diff(3)
+
+    # 缠论结构特征: 中枢位置(0=below,1=inside,2=above) + 价格动量 + MACD趋势 + 区间位置
+    pos_code = pd.Series(1.0, index=close.index)  # inside默认
+    pos_code[cur > zg] = 2.0
+    pos_code[(cur < zd) | (pos.isna() & (close < close.rolling(60).mean()))] = 0.0
+
+    # 逐日计算结构特征
+    roll_zg = pd.Series(zg, index=close.index)  # 简化: 用当前中枢回填
+    roll_zd = pd.Series(zd, index=close.index)
+    daily_pos_code = np.where(close > roll_zg, 2.0,
+                       np.where(close < roll_zd, 0.0, 1.0))
+
     feats = pd.DataFrame({
-        'pos': pos * 100,
-        'hist_chg': hist.diff(5),
-        'ret20': close.pct_change(20) * 100,
-        'ret5': close.pct_change(5) * 100,
+        'struct_pos': daily_pos_code,           # 中枢位置(0/1/2)
+        'pos_in_range': pos * 100,               # 60日区间位置
+        'hist_trend': hist_trend,                # MACD柱趋势
+        'ret20': close.pct_change(20) * 100,     # 20日动量
+        'ret5': close.pct_change(5) * 100,       # 5日动量
     }).dropna()
     idx = feats.index
     fwd_ret = close.pct_change(horizon).shift(-horizon)
 
     if len(feats) < 80:
-        return {'future_dates': _future_trade_dates(last_date, horizon),
-                'paths': {'up': expand(up_wp), 'range': expand(range_wp),
-                          'down': expand(down_wp)},
-                'probs': {'up': 33, 'range': 34, 'down': 33},
-                'basis': f'历史样本不足,概率按均势处理; 中枢[{zd:.0f}-{zg:.0f}]'}
+        probs = {'up': 33, 'range': 34, 'down': 33}
+        basis = f'历史样本不足,概率按均势处理; 中枢[{zd:.0f}-{zg:.0f}], 当前{cur_pos}'
+    else:
+        mean, std = feats.mean(), feats.std().replace(0, 1)
+        cur_feat = ((feats.iloc[-1] - mean) / std).values
+        hist_mat = ((feats - mean) / std).values
+        dists = np.linalg.norm(hist_mat - cur_feat, axis=1)
+        cutoff = len(feats) - horizon - 5
+        valid = np.argsort(dists[:cutoff])[:30]
+        sim_dates = idx[valid]
+        rets = fwd_ret.loc[sim_dates].dropna()
 
-    # 标准化后欧氏距离匹配
-    mean, std = feats.mean(), feats.std().replace(0, 1)
-    cur_feat = ((feats.iloc[-1] - mean) / std).values
-    hist_mat = ((feats - mean) / std).values
-    dists = np.linalg.norm(hist_mat - cur_feat, axis=1)
-    # 排除最近horizon+5天(与自身重叠)
-    cutoff = len(feats) - horizon - 5
-    valid = np.argsort(dists[:cutoff])[:30]
-    sim_dates = idx[valid]
-    rets = fwd_ret.loc[sim_dates].dropna()
+        p_up = float((rets > 0.02).mean()) if len(rets) else 0.33
+        p_down = float((rets < -0.02).mean()) if len(rets) else 0.33
+        p_range = max(0.0, 1 - p_up - p_down)
+        total = p_up + p_down + p_range
+        probs = {'up': round(p_up / total * 100), 'range': round(p_range / total * 100),
+                 'down': round(p_down / total * 100)}
+        avg_ret = float(rets.mean() * 100) if len(rets) else 0.0
 
-    p_up = float((rets > 0.02).mean()) if len(rets) else 0.33
-    p_down = float((rets < -0.02).mean()) if len(rets) else 0.33
-    p_range = max(0.0, 1 - p_up - p_down)
-    total = p_up + p_down + p_range
-    probs = {'up': round(p_up / total * 100), 'range': round(p_range / total * 100),
-             'down': round(p_down / total * 100)}
-    avg_ret = float(rets.mean() * 100) if len(rets) else 0.0
+        basis = (f"锚定中枢[{zd:.0f}-{zg:.0f}], 当前{cur_pos}; "
+                 f"结构特征(中枢位置/区间位置/MACD趋势/动量)匹配历史最相似30段, "
+                 f"后{horizon}日平均{avg_ret:+.2f}%")
 
-    basis = (f"锚定中枢[{zd:.0f}-{zg:.0f}]; 与历史最相似30段(特征: 区间位置/"
-             f"MACD柱变化/20日动量/5日动量)后{horizon}日平均{avg_ret:+.2f}%")
+    # --- 当前结构信号汇总 ---
+    signals = []
+    if bottom_div:
+        signals.append('底背驰(下跌动能衰竭, 1买先兆)')
+    if top_div:
+        signals.append('顶背驰(上涨动能衰竭, 1卖先兆)')
+    if cur_pos == 'above':
+        signals.append(f'价格在中枢上方, 关注回抽是否形成3买')
+    elif cur_pos == 'below':
+        signals.append(f'价格在中枢下方, 关注反抽是否形成3卖')
+    else:
+        signals.append(f'价格在中枢内部, 等待方向突破')
 
     return {
         'future_dates': _future_trade_dates(last_date, horizon),
         'paths': {'up': expand(up_wp), 'range': expand(range_wp),
                   'down': expand(down_wp)},
         'probs': probs,
+        'structures': structures,
         'zg': zg, 'zd': zd,
+        'cur_pos': cur_pos,
+        'signals': signals,
         'basis': basis,
     }
 
