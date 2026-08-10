@@ -289,6 +289,28 @@ def _future_trade_dates(last_date, n):
     return out
 
 
+def _future_intraday_dates(last_date, n_per_day, horizon):
+    """
+    分钟级推演日期标签: 从最后一根模拟分钟K线起, 按每日n_per_day根顺延(跳过周末)
+    标签格式与 _simulate_intraday 一致: '%Y-%m-%d %H:%M'
+    """
+    times = [_session_hhmm((j + 1) * 240 // n_per_day) for j in range(n_per_day)]
+    t = pd.Timestamp(last_date)
+    hhmm = t.strftime('%H:%M')
+    j = times.index(hhmm) if hhmm in times else -1
+    day = t.normalize()
+    out = []
+    while len(out) < horizon:
+        j += 1
+        if j >= n_per_day:
+            j = 0
+            day += pd.Timedelta(days=1)
+            while day.weekday() >= 5:
+                day += pd.Timedelta(days=1)
+        out.append(day.strftime('%Y-%m-%d ') + times[j])
+    return out
+
+
 def forecast_paths(df, chan_result, horizon=15):
     """
     缠论结构走势推演(精细版):
@@ -309,6 +331,7 @@ def forecast_paths(df, chan_result, horizon=15):
     Returns:
         dict: future_dates/paths{up,range,down}/probs/
               structures{up:[...], range:[...], down:[...]}/
+              path_events{up:[...], range:[...], down:[...]}  # 路径上的精确缠论结构事件时点
               basis/zg/zd/cur_pos
     """
     df = df.sort_values('date').reset_index(drop=True)
@@ -379,6 +402,36 @@ def forecast_paths(df, chan_result, horizon=15):
         ] + ([f"下跌末段若出现底背驰 → 形成第1类买点(1买), 是抄底窗口"
               for _ in [1]] if bottom_div else
              [f"关注后续下跌笔是否出现底背驰(当前尚无背驰信号)"]),
+    }
+
+    # --- 路径事件标记: 精确的缠论结构事件时点(offset为交易日偏移, 0..horizon-1) ---
+    q1 = max(1, (horizon - 1) // 4)           # 约1/4处
+    q2 = max(q1 + 1, (horizon - 1) // 2)      # 约1/2处
+    q3 = max(q2 + 1, (horizon - 1) * 3 // 4)  # 约3/4处
+    qe = horizon - 1                           # 末端
+    path_events = {
+        # 上攻: 突破ZG → 回抽3买 → 新中枢上移 → 末端关注1卖
+        'up': [
+            {'offset': q1, 'label': '突破ZG', 'type': 'break', 'price': round(zg, 2)},
+            {'offset': q2, 'label': '3买形成', 'type': '3买', 'price': round(zg * 1.005, 2)},
+            {'offset': q3, 'label': '新中枢上移', 'type': '中枢', 'price': round(zg + rng * 0.3, 2)},
+            {'offset': qe, 'label': '关注1卖', 'type': '1卖', 'price': round(zg + rng * 0.8, 2)},
+        ],
+        # 震荡: 中枢内反复 → 中枢延伸 → 方向待定
+        'range': [
+            {'offset': q1, 'label': '中枢内反复', 'type': '震荡', 'price': round(mid, 2)},
+            {'offset': q2, 'label': '中枢延伸', 'type': '中枢', 'price': round(mid, 2)},
+            {'offset': qe, 'label': '方向待定', 'type': '待定',
+             'price': round(mid, 2)},
+        ],
+        # 下探: 跌破ZD → 反抽3卖 → 新中枢下移 → 末端关注1买(若底背驰)
+        'down': [
+            {'offset': q1, 'label': '跌破ZD', 'type': 'break', 'price': round(zd, 2)},
+            {'offset': q2, 'label': '3卖形成', 'type': '3卖', 'price': round(zd * 0.995, 2)},
+            {'offset': q3, 'label': '新中枢下移', 'type': '中枢', 'price': round(zd - rng * 0.3, 2)},
+            {'offset': qe, 'label': '1买形成(底背驰)' if bottom_div else '关注1买',
+             'type': '1买', 'price': round(zd - rng * 0.8, 2)},
+        ],
     }
 
     # --- 结构特征匹配概率 ---
@@ -452,6 +505,7 @@ def forecast_paths(df, chan_result, horizon=15):
         'future_dates': _future_trade_dates(last_date, horizon),
         'paths': {'up': expand(up_wp), 'range': expand(range_wp),
                   'down': expand(down_wp)},
+        'path_events': path_events,
         'probs': probs,
         'structures': structures,
         'zg': zg, 'zd': zd,
@@ -459,6 +513,12 @@ def forecast_paths(df, chan_result, horizon=15):
         'signals': signals,
         'basis': basis,
     }
+
+
+def _fmt_date(d):
+    """日期格式化: 分钟级(带HH:MM)保留时间, 日线只保留年月日"""
+    t = pd.Timestamp(d)
+    return t.strftime('%Y-%m-%d %H:%M') if (t.hour or t.minute) else t.strftime('%Y-%m-%d')
 
 
 # ---------------- 总入口 ----------------
@@ -503,7 +563,7 @@ def analyze(df, min_gap=4):
              f"{'⚠' + div_msg if (bottom_div or top_div) else div_msg}; {tp_txt}")
 
     def _fmt_pts(seq):
-        return [{'date': pd.Timestamp(p['date']).strftime('%Y-%m-%d'),
+        return [{'date': _fmt_date(p['date']),
                  'price': round(float(p['price']), 2),
                  **{k: v for k, v in p.items() if k in ('type', 'label')}}
                 for p in seq]
@@ -511,8 +571,8 @@ def analyze(df, min_gap=4):
     return {
         'bi_points': _fmt_pts(pts),
         'zhongshu': [{'zg': z['zg'], 'zd': z['zd'],
-                      'start_date': pd.Timestamp(z['start_date']).strftime('%Y-%m-%d'),
-                      'end_date': pd.Timestamp(z['end_date']).strftime('%Y-%m-%d')}
+                      'start_date': _fmt_date(z['start_date']),
+                      'end_date': _fmt_date(z['end_date'])}
                      for z in zs_list],
         'trade_points': _fmt_pts(tps),
         'waves': _fmt_pts(waves),
@@ -526,3 +586,75 @@ def analyze(df, min_gap=4):
             'hist': [round(float(v), 2) for v in hist],
         },
     }
+
+
+# ---------------- 9. 多周期级别联立分析 ----------------
+def _session_hhmm(mins):
+    """A股交易时段(09:30起共240分钟, 跳过11:30-13:00午休)第mins分钟的HH:MM标签"""
+    t = 9 * 60 + 30 + mins if mins <= 120 else 13 * 60 + mins - 120
+    return f"{t // 60:02d}:{t % 60:02d}"
+
+
+def _simulate_intraday(df_daily, n):
+    """
+    将每根日线拆分为n根模拟分钟K线(用当日open/high/low/close模拟日内走势)
+    聚合校验规则(n根一组还原日线): high=max, low=min, open=首根open,
+    close=末根close, volume=sum; 每日的n根K线时间均匀分布于该日交易时段
+    """
+    has_vol = 'volume' in df_daily.columns
+    rows = []
+    for i in range(len(df_daily)):
+        r = df_daily.iloc[i]
+        d = pd.Timestamp(r['date']).strftime('%Y-%m-%d')
+        o, h, l = float(r['open']), float(r['high']), float(r['low'])
+        c = float(r['close'])
+        v = float(r['volume']) if has_vol else 0.0
+        # 收盘路径: open -> close 线性过渡(首根open=当日open, 末根close=当日close)
+        path = o + (c - o) * np.linspace(0.0, 1.0, n + 1)
+        rng = max(h - l, 1e-6)
+        # 当日最高/最低点落位: 上涨日低点先出、高点后出; 下跌日反之
+        hi_i = min(int(round(n * (0.7 if c >= o else 0.3))), n - 1)
+        lo_i = min(int(round(n * (0.3 if c >= o else 0.7))), n - 1)
+        for j in range(n):
+            bo, bc = path[j], path[j + 1]
+            bh = min(max(bo, bc) + rng * 0.02, h)
+            bl = max(min(bo, bc) - rng * 0.02, l)
+            if j == hi_i:
+                bh = h
+            if j == lo_i:
+                bl = l
+            bh = max(bh, bo, bc)
+            bl = min(bl, bo, bc)
+            rows.append({
+                'date': f"{d} {_session_hhmm((j + 1) * 240 // n)}",
+                'open': bo, 'high': bh, 'low': bl, 'close': bc,
+                'volume': v / n,
+            })
+    return pd.DataFrame(rows, columns=['date', 'open', 'high', 'low', 'close', 'volume'])
+
+
+def analyze_multi_level(df_daily, levels=None):
+    """
+    多周期缠论分析(大侠三绝体系: 分型->笔->中枢 在各级别联立)
+
+    Args:
+        df_daily: 日线级别DataFrame(date/open/high/low/close)
+        levels: 要分析的周期级别列表, 默认['日','60min','30min','15min','5min']
+
+    Returns:
+        dict: {级别名: analyze()结果}
+    """
+    if levels is None:
+        levels = ['日', '60min', '30min', '15min', '5min']
+    # 级别 -> (每日模拟K线根数, min_gap): 60min≈4根/日, 30min≈8, 15min≈16, 5min≈48
+    level_cfg = {'日': (1, 4), '60min': (4, 3), '30min': (8, 3),
+                 '15min': (16, 2), '5min': (48, 2)}
+    df_daily = df_daily.sort_values('date').reset_index(drop=True)
+    out = {}
+    for lv in levels:
+        n, mg = level_cfg.get(lv, (4, 3))
+        if n <= 1:
+            out[lv] = analyze(df_daily, min_gap=mg)
+        else:
+            out[lv] = analyze(_simulate_intraday(df_daily, n), min_gap=mg)
+    return out

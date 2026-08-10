@@ -491,82 +491,160 @@ def get_position_advice(mrs, slope=None):
             return "0~2成", "空仓期", "空仓观望,等斜率转正再建仓"
 
 
-def detect_mrs_turning_point(close, mrs, window=10):
+# ======================================================================
+# MRS 变盘点检测 —— 基于"突破分值点位"的攻防转换体系
+# ======================================================================
+# 关键分值点位 (从高位到低位):
+#   75 — 进攻区上沿 (满仓 → 警惕)
+#   60 — 偏多/震荡分界线 (加仓/减仓的核心变盘点)
+#   45 — 震荡/防守分界线 (建仓/减仓的次要变盘点)
+#   30 — 防守/空仓分界线 (空仓的最后防线)
+#
+# 变盘点触发条件: MRS 连续2日突破(站上或跌破)某一分值点位,
+#   且突破前一日在分界线另一侧 → 确认变盘
+#
+# 加仓信号 (向上突破):
+#   突破60 → 从震荡进入偏多, 加仓至6~8成
+#   突破45 → 从防守进入震荡, 开始建仓3~5成
+#   突破30 → 从空仓进入防守, 试探建仓1~3成
+#
+# 减仓信号 (向下突破):
+#   跌破60 → 从偏多进入震荡, 降至4~6成
+#   跌破45 → 从震荡进入防守, 降至2~4成
+#   跌破30 → 进入空仓区, 清仓至0~2成
+# ======================================================================
+
+MRS_THRESHOLDS = [75, 60, 45, 30]
+
+
+def _detect_break(mrs_series, threshold, confirm_days=2):
     """
-    MRS周期拐点检测(周期理论: MRS是0-100的震荡周期分,
-    高位必然回落、低位必然回升 —— 拐点(方向转变的临界点)才是增减仓操作点,
-    静态档位只反映"现在在哪",拐点反映"该动了吗")
+    检测MRS是否突破某个分值点位
+    Returns: list of break events [{'idx', 'direction', 'mrs', 'date'}]
+    """
+    m = pd.Series(mrs_series, dtype=float).reset_index(drop=True)
+    breaks = []
+    for i in range(confirm_days, len(m)):
+        # 向上突破: 当前≥threshold 且 确认日前<threshold
+        if m.iloc[i] >= threshold and m.iloc[i - 1] < threshold:
+            # 确认: 突破后连续confirm_days-1日都≥threshold
+            if all(m.iloc[i + j] >= threshold for j in range(confirm_days - 1) if i + j < len(m)):
+                breaks.append({'idx': i, 'direction': 'up', 'threshold': threshold,
+                               'mrs': round(float(m.iloc[i]), 1)})
+        # 向下突破
+        elif m.iloc[i] < threshold and m.iloc[i - 1] >= threshold:
+            if all(m.iloc[i + j] < threshold for j in range(confirm_days - 1) if i + j < len(m)):
+                breaks.append({'idx': i, 'direction': 'down', 'threshold': threshold,
+                               'mrs': round(float(m.iloc[i]), 1)})
+    return breaks
 
-    拐点定义(3日平滑MRS + 3日斜率):
-      低位回升点(加仓窗口): 斜率由负转正 且 MRS<45
-      高位回落点(减仓窗口): 斜率由正转负 且 MRS>55
 
+def detect_mrs_breakpoints(close, mrs, window=10):
+    """
+    MRS变盘点检测(突破分值点位触发)
+    
+    核心逻辑: MRS在0-100之间震荡,突破关键分值点位意味着市场状态转换,
+    从而触发加减仓操作。这比斜率拐点更直接、更贴合截图中的图表原理。
+    
     Args:
-        close: 指数收盘价Series(与mrs同索引)
+        close: 指数收盘价Series
         mrs:   MRS序列Series
-        window: 统计拐点后续收益的窗口(交易日)
-
+        window: 统计变盘点后续收益的窗口
+    
     Returns:
-        dict: state(当前状态)/action(操作建议)/slope(当前斜率)
-              turns(历史拐点列表,供图上标注)/stats(拐点有效性统计)
+        dict: state/action/current_zone/breaks(历史变盘点)/stats(有效性统计)
     """
     m = pd.Series(mrs, dtype=float).reset_index(drop=True)
     c = pd.Series(close, dtype=float).reset_index(drop=True)
-    ms = m.rolling(3, min_periods=1).mean()          # 3日平滑降噪
-    slope = ms.diff(3)                                # 3日斜率
-
-    # --- 历史拐点识别 + 后续收益统计 ---
-    turns = []
-    low_stats, high_stats = [], []
-    for i in range(5, len(m) - window):
-        s_prev, s_now = slope.iloc[i - 1], slope.iloc[i]
-        if pd.isna(s_prev) or pd.isna(s_now):
-            continue
-        fwd = float(c.iloc[i + window] / c.iloc[i] - 1)
-        if s_prev <= 0 < s_now and ms.iloc[i] < 45:
-            turns.append({'idx': i, 'type': 'low_up', 'mrs': round(float(ms.iloc[i]), 1)})
-            low_stats.append(fwd)
-        elif s_prev >= 0 > s_now and ms.iloc[i] > 55:
-            turns.append({'idx': i, 'type': 'high_down', 'mrs': round(float(ms.iloc[i]), 1)})
-            high_stats.append(fwd)
-
-    # --- 拐点有效性统计 ---
+    
+    # --- 检测所有级别的变盘点 ---
+    all_breaks = []
+    for th in MRS_THRESHOLDS:
+        all_breaks.extend(_detect_break(m, th, confirm_days=2))
+    all_breaks.sort(key=lambda x: x['idx'])
+    
+    # --- 历史变盘点后续收益统计 ---
+    up_stats, down_stats = [], []
+    for b in all_breaks:
+        if b['idx'] + window < len(c):
+            fwd = float(c.iloc[b['idx'] + window] / c.iloc[b['idx']] - 1)
+            if b['direction'] == 'up':
+                up_stats.append(fwd)
+            else:
+                down_stats.append(fwd)
+    
     stats = {}
-    if low_stats:
-        stats['low'] = {'n': len(low_stats),
-                        'avg_ret': round(float(np.mean(low_stats)) * 100, 2),
-                        'win_rate': round(float(np.mean([1 if r > 0 else 0
-                                                       for r in low_stats])) * 100)}
-    if high_stats:
-        stats['high'] = {'n': len(high_stats),
-                         'avg_ret': round(float(np.mean(high_stats)) * 100, 2),
-                         'win_rate': round(float(np.mean([1 if r < 0 else 0
-                                                        for r in high_stats])) * 100)}
-
-    # --- 当前状态判定 ---
+    if up_stats:
+        stats['up'] = {'n': len(up_stats),
+                       'avg_ret': round(float(np.mean(up_stats)) * 100, 2),
+                       'win_rate': round(float(np.mean([1 if r > 0 else 0 for r in up_stats])) * 100)}
+    if down_stats:
+        stats['down'] = {'n': len(down_stats),
+                         'avg_ret': round(float(np.mean(down_stats)) * 100, 2),
+                         'win_rate': round(float(np.mean([1 if r < 0 else 0 for r in down_stats])) * 100)}
+    
+    # --- 当前所在区间 ---
     cur_mrs = float(m.iloc[-1])
-    cur_slope = float(slope.iloc[-1]) if not pd.isna(slope.iloc[-1]) else 0.0
-    # 近3日斜率方向(避免单日噪声)
-    recent_slope = float(ms.iloc[-1] - ms.iloc[-4]) if len(ms) > 4 else cur_slope
-
-    if cur_mrs < 45 and recent_slope > 1.5:
-        state, action = "低位回升拐点", "加仓窗口: MRS从低位拐头向上, 逐步加仓至4~6成"
-    elif cur_mrs > 55 and recent_slope < -1.5:
-        state, action = "高位回落拐点", "减仓窗口: MRS从高位拐头向下, 降至2~4成防守"
-    elif cur_mrs >= 60 and recent_slope >= -1.5:
-        state, action = "强势上行/高位钝化", "持有为主, 密切盯拐头, 斜率转负即减仓"
-    elif cur_mrs <= 40 and recent_slope <= 1.5:
-        state, action = "探底中/低位钝化", "空仓观望, 等斜率转正再加仓"
-    elif recent_slope > 0:
-        state, action = "中位回升", "跟随斜率方向, 维持或小幅加仓"
+    if cur_mrs >= 75:
+        zone = '进攻区'
+    elif cur_mrs >= 60:
+        zone = '偏多区'
+    elif cur_mrs >= 45:
+        zone = '震荡区'
+    elif cur_mrs >= 30:
+        zone = '防守区'
     else:
-        state, action = "中位回落", "跟随斜率方向, 控制仓位做T"
-
+        zone = '空仓区'
+    
+    # --- 最近变盘点(近10个交易日) ---
+    recent_breaks = [b for b in all_breaks if b['idx'] >= len(m) - 10]
+    
+    # --- 当前状态判定(档位+最近突破方向) ---
+    if recent_breaks:
+        last = recent_breaks[-1]
+        th, direc = last['threshold'], last['direction']
+        if direc == 'up':
+            if th == 60:
+                state, action = f"突破60变盘点(偏多)", f"MRS突破60确认! 从震荡转入偏多, 加仓至6~8成"
+            elif th == 45:
+                state, action = f"突破45变盘点(震荡)", f"MRS突破45确认! 从防守转入震荡, 开始建仓3~5成"
+            elif th == 30:
+                state, action = f"突破30变盘点(防守)", f"MRS突破30确认! 从空仓转入防守, 试探建仓1~3成"
+            elif th == 75:
+                state, action = f"突破75变盘点(进攻)", f"MRS突破75! 进入满仓进攻区, 但盯紧跌破75的信号"
+            else:
+                state, action = f"向上突破{th}", f"MRS站上{th}, 方向转多"
+        else:
+            if th == 60:
+                state, action = f"跌破60变盘点(震荡)", f"MRS跌破60确认! 从偏多转入震荡, 降至4~6成做T"
+            elif th == 45:
+                state, action = f"跌破45变盘点(防守)", f"MRS跌破45确认! 从震荡转入防守, 降至2~4成"
+            elif th == 30:
+                state, action = f"跌破30变盘点(空仓)", f"MRS跌破30! 进入空仓区, 清仓至0~2成观望"
+            elif th == 75:
+                state, action = f"跌破75变盘点(偏多)", f"MRS跌破75! 退出进攻区, 降至6~8成"
+            else:
+                state, action = f"向下跌破{th}", f"MRS跌破{th}, 方向转空"
+    else:
+        # 无近期变盘点, 按当前区间给建议
+        if zone == '进攻区':
+            state, action = "进攻区持盈", "MRS高位运行, 持有为主, 盯紧跌破75信号"
+        elif zone == '偏多区':
+            state, action = "偏多区持有", "MRS偏多区运行, 持有待涨, 跌破60即减仓"
+        elif zone == '震荡区':
+            state, action = "震荡区做T", "MRS震荡区运行, 高抛低吸做T, 等待突破方向"
+        elif zone == '防守区':
+            state, action = "防守区观望", "MRS防守区运行, 只留底仓, 突破45再建仓"
+        else:
+            state, action = "空仓区等待", "MRS空仓区运行, 空仓观望, 突破30再试探"
+    
     return {
-        'state': state, 'action': action,
-        'slope': round(cur_slope, 2),
-        'mrs_smooth': [round(float(v), 1) for v in ms],
-        'turns': turns,
+        'state': state,
+        'action': action,
+        'zone': zone,
+        'cur_mrs': round(cur_mrs, 1),
+        'breaks': all_breaks,
+        'recent_breaks': recent_breaks,
         'stats': stats,
     }
 
