@@ -167,7 +167,7 @@ body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Microso
 
 <div class="header">
     <h1>大盘与行业走势分析看板 <span style="font-size:12px;color:#8b949e">缠论·量柱·多周期·MRS·ETF策略</span></h1>
-    <div class="update-time">数据更新时间: 2026-08-10 22:59</div>
+    <div class="update-time">数据更新时间: 2026-08-10 23:57</div>
 </div>
 
 <div class="instructions">
@@ -253,6 +253,10 @@ body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Microso
 
 <div class="chart-section" id="etf-strategy">
     <div class="chart-title"><span class="mod-badge">第三步 · 选行业</span>行业ETF投资策略 <span style="font-size:12px;color:#8b949e;font-weight:400">每日更新 · 明确买卖策略与具体仓位</span></div>
+    <div class="sub-title">行业板块趋势热力图 (横截面相对强度, 单元格=得分, 黄框=资金流入/蓝框=流出)</div>
+    <div class="chart-container" id="heatmap-wrap">
+        <div id="heatmap" class="chart-mobile-h" style="width: 100%; height: 560px;"></div>
+    </div>
     
     <div class='strategy-head'>
         <span class='strategy-anchor'>总仓位锚点: <b style='color:#f0f6fc'>MRS 56(震荡区)</b>
@@ -269,10 +273,6 @@ body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Microso
     <div class="sub-title">板块生命周期全景</div>
     <div class='lc-legend'><span class='lc-item'><i style='background:#f97316'></i>启动期: 买入区(早期分歧日介入)</span><span class='lc-item'><i style='background:#ef4444'></i>发酵期: 持有/回调加仓</span><span class='lc-item'><i style='background:#dc2626'></i>主升期: 坚定持有</span><span class='lc-item'><i style='background:#a855f7'></i>高潮期: 禁止追高,分批止盈</span><span class='lc-item'><i style='background:#3b82f6'></i>退潮期: 卖出/回避</span><span class='lc-item'><i style='background:#eab308'></i>震荡期: 做T降成本,不加仓</span><span class='lc-item'><i style='background:#22c55e'></i>冰点期: 观望,等Δ转正再介入</span></div>
     <table class='sec-table'><thead><tr><th style='width:120px'>生命周期</th><th>板块 (得分/5日变化) + 对应ETF</th></tr></thead><tbody><tr><td><span class='stage-badge' style='background:#f97316'>启动期</span><div class='stage-action'>买入区(早期分歧日介入)</div></td><td><div class='sec-chips'><div class='sec-chip'><b>化工</b> 46↑ <span class='etf'>化工ETF 159870</span></div><div class='sec-chip'><b>电力</b> 45↑ <span class='etf'>电力ETF 561560</span></div><div class='sec-chip'><b>机械</b> 44↑ <span class='etf'>机械ETF 159886</span></div><div class='sec-chip'><b>轻工</b> 42↑ <span class='etf'>无主流ETF,用个股替代</span></div><div class='sec-chip'><b>环保</b> 42↑ <span class='etf'>环保ETF 512580</span></div><div class='sec-chip'><b>建材</b> 40↑ <span class='etf'>建材ETF 159745</span></div><div class='sec-chip'><b>军工</b> 30↑ <span class='etf'>军工ETF 512660</span></div></div></td></tr><tr><td><span class='stage-badge' style='background:#ef4444'>发酵期</span><div class='stage-action'>持有/回调加仓</div></td><td><div class='sec-chips'><div class='sec-chip'><b>石油</b> 67↑ <span class='etf'>能源ETF 159930</span></div><div class='sec-chip'><b>钢铁</b> 64↑ <span class='etf'>钢铁ETF 515210</span></div><div class='sec-chip'><b>计算机</b> 62↑ <span class='etf'>计算机ETF 512720</span></div><div class='sec-chip'><b>公用</b> 59↑ <span class='etf'>电力ETF(公用事业) 159611</span></div></div></td></tr><tr><td><span class='stage-badge' style='background:#dc2626'>主升期</span><div class='stage-action'>坚定持有</div></td><td><div class='sec-chips'><div class='sec-chip'><b>有色</b> 88↑ <span class='etf'>有色金属ETF 512400</span></div><div class='sec-chip'><b>医药</b> 73↑ <span class='etf'>医疗ETF 512170</span></div><div class='sec-chip'><b>煤炭</b> 73↑ <span class='etf'>煤炭ETF 515220</span></div></div></td></tr><tr><td><span class='stage-badge' style='background:#a855f7'>高潮期</span><div class='stage-action'>禁止追高,分批止盈</div></td><td><div class='sec-chips'><div class='sec-chip'><b>食品</b> 77↓ <span class='etf'>食品饮料ETF 515170</span></div><div class='sec-chip'><b>美容</b> 76↓ <span class='etf'>无主流ETF,用个股替代</span></div><div class='sec-chip'><b>交通</b> 72↓ <span class='etf'>交通运输ETF 159666</span></div><div class='sec-chip'><b>传媒</b> 70↓ <span class='etf'>传媒ETF 512980</span></div></div></td></tr><tr><td><span class='stage-badge' style='background:#eab308'>震荡期</span><div class='stage-action'>做T降成本,不加仓</div></td><td><div class='sec-chips'><div class='sec-chip'><b>非银</b> 52↓ <span class='etf'>证券ETF 512880</span></div></div></td></tr><tr><td><span class='stage-badge' style='background:#3b82f6'>退潮期</span><div class='stage-action'>卖出/回避</div></td><td><div class='sec-chips'><div class='sec-chip'><b>商贸</b> 65↓ <span class='etf'>无主流ETF,用个股替代</span></div><div class='sec-chip'><b>社服</b> 59↓ <span class='etf'>旅游ETF 159766</span></div><div class='sec-chip'><b>银行</b> 54↓ <span class='etf'>银行ETF 512800</span></div><div class='sec-chip'><b>家电</b> 54↓ <span class='etf'>家电ETF 159996</span></div><div class='sec-chip'><b>纺织</b> 48↓ <span class='etf'>无主流ETF,用个股替代</span></div></div></td></tr><tr><td><span class='stage-badge' style='background:#22c55e'>冰点期</span><div class='stage-action'>观望,等Δ转正再介入</div></td><td><div class='sec-chips'><div class='sec-chip'><b>汽车</b> 38↓ <span class='etf'>汽车ETF 516110</span></div><div class='sec-chip'><b>房地产</b> 35↓ <span class='etf'>房地产ETF 512200</span></div><div class='sec-chip'><b>建筑</b> 32↑ <span class='etf'>基建ETF 516950</span></div><div class='sec-chip'><b>通信</b> 25↑ <span class='etf'>通信ETF 515880</span></div></div></td></tr></tbody></table>
-    <div class="sub-title">行业板块趋势热力图 (横截面相对强度, 单元格=得分, 黄框=资金流入/蓝框=流出)</div>
-    <div class="chart-container" id="heatmap-wrap">
-        <div id="heatmap" class="chart-mobile-h" style="width: 100%; height: 560px;"></div>
-    </div>
     
     <div class="sub-title">策略回测与自我进化 (板块轮动: 启动期买入/高潮期止盈/退潮期卖出, MRS控仓)</div>
     <div class="stat-grid">

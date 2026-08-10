@@ -1065,14 +1065,14 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
 
 <div class="chart-section" id="etf-strategy">
     <div class="chart-title"><span class="mod-badge">第三步 · 选行业</span>行业ETF投资策略 <span style="font-size:12px;color:#8b949e;font-weight:400">每日更新 · 明确买卖策略与具体仓位</span></div>
-    {strategy_html}
-    <div class="sub-title">板块生命周期全景</div>
-    {legend}
-    {sector_table}
     <div class="sub-title">行业板块趋势热力图 (横截面相对强度, 单元格=得分, 黄框=资金流入/蓝框=流出)</div>
     <div class="chart-container" id="heatmap-wrap">
         <div id="heatmap" class="chart-mobile-h" style="width: 100%; height: 560px;"></div>
     </div>
+    {strategy_html}
+    <div class="sub-title">板块生命周期全景</div>
+    {legend}
+    {sector_table}
     {backtest_html}
 </div>
 
