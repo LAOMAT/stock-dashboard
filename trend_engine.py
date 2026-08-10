@@ -436,23 +436,59 @@ def calc_market_regime(index_df, margin_df, breadth_series):
                'margin_score', 'breadth_score']]
 
 
-def get_position_advice(mrs):
+def get_position_advice(mrs, slope=None):
     """
     MRS -> 仓位配置映射(核心交付物)
+    周期理论修正: MRS是0-100有界震荡分,高位必回落/低位必回升,
+    仓位不仅看当前分值,还要看斜率方向(拐点)。
+
+    Args:
+        mrs: 当前MRS值
+        slope: 3日平滑MRS的斜率(正=上升中,负=下降中), None时退化为纯静态逻辑
 
     Returns:
         (仓位区间, 档位名称, 操作要点)
     """
+    s = slope if slope is not None else 0.0
+
+    # --- 高位区(MRS>=60): 周期必跌,斜率方向决定是持有还是减仓 ---
     if mrs >= 75:
-        return "8~10成", "进攻期", "主线板块ETF满仓轮动,持有待涨"
+        if s < -1.5:
+            return "4~6成", "高位回落", "MRS高位拐头!周期必跌,立即减仓至半仓以下"
+        elif s < 0:
+            return "6~8成", "高位走平", "MRS高位走弱,分批止盈,不追高"
+        else:
+            return "8~10成", "进攻期", "MRS强势上行,持有待涨,但盯紧拐头信号"
     elif mrs >= 60:
-        return "6~8成", "偏多期", "持有主线,回调至MA20加仓"
+        if s < -1.5:
+            return "4~6成", "偏多走弱", "MRS从高位回落,降至半仓做T"
+        else:
+            return "6~8成", "偏多期", "持有主线,回调至MA20加仓"
+
+    # --- 中位区(45-60): 震荡区,斜率决定加还是减 ---
     elif mrs >= 45:
-        return "4~6成", "震荡期", "高抛低吸做T降成本,不追涨"
+        if s > 1.5:
+            return "5~7成", "中位回升", "MRS拐头向上,可小幅加仓跟进"
+        elif s < -1.5:
+            return "3~5成", "中位回落", "MRS拐头向下,收缩仓位防守"
+        else:
+            return "4~6成", "震荡期", "高抛低吸做T降成本,不追涨"
+
+    # --- 低位区(MRS<45): 周期必涨,斜率方向决定是空仓还是建仓 ---
     elif mrs >= 30:
-        return "2~4成", "防守期", "只留底仓,等MRS回升再加"
+        if s > 1.5:
+            return "3~5成", "低位回升", "MRS低位拐头!周期必涨,逐步建仓"
+        elif s > 0:
+            return "2~4成", "低位走平", "MRS低位企稳,开始逢低布局"
+        else:
+            return "2~4成", "防守期", "只留底仓,等MRS斜率转正再加"
     else:
-        return "0~2成", "空仓期", "空仓观望,保存本金等拐点"
+        if s > 1.5:
+            return "2~4成", "极低位拐点", "MRS极低位拐头!抄底窗口,分批建仓"
+        elif s > 0:
+            return "1~3成", "极低位企稳", "MRS极低位走平,准备入场"
+        else:
+            return "0~2成", "空仓期", "空仓观望,等斜率转正再建仓"
 
 
 def detect_mrs_turning_point(close, mrs, window=10):

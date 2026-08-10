@@ -162,9 +162,6 @@ def compute_market_trend(index_data, margin_data, regime):
 
     # 仓位建议 + 背离检测 + 周期拐点检测
     latest_mrs = float(regime['mrs'].iloc[-1])
-    position, gear, tip = trend_engine.get_position_advice(latest_mrs)
-    div_type, div_msg = trend_engine.detect_mrs_divergence(
-        regime['close'].reset_index(drop=True), regime['mrs'].reset_index(drop=True))
 
     # MRS周期拐点(高位必回落/低位必回升,拐点=操作点)
     tp = trend_engine.detect_mrs_turning_point(
@@ -172,6 +169,11 @@ def compute_market_trend(index_data, margin_data, regime):
     turns_payload = [{'date': regime['date_str'].iloc[t['idx']],
                       'type': t['type'], 'mrs': t['mrs']}
                      for t in tp['turns']]
+
+    # 仓位建议: 同时传入MRS值和斜率,周期理论修正(高位拐头减仓/低位拐头建仓)
+    position, gear, tip = trend_engine.get_position_advice(latest_mrs, tp['slope'])
+    div_type, div_msg = trend_engine.detect_mrs_divergence(
+        regime['close'].reset_index(drop=True), regime['mrs'].reset_index(drop=True))
 
     print(f"  MRS最新值: {latest_mrs:.1f} -> {gear}({position})")
     print(f"  因子分解: 价格{regime['price_score'].iloc[-1]:.0f} "
