@@ -78,7 +78,14 @@ def fetch_all_data():
     if len(cyb_data) > 0:
         print(f"  获取成功: {len(cyb_data)}条, 最新日期={cyb_data.iloc[-1]['date'].strftime('%Y-%m-%d')}")
 
-    return sectors_data, index_data, margin_data, global_indices, cyb_data
+    print("\n" + "=" * 60)
+    print("步骤4c: 获取科创50指数K线数据")
+    print("=" * 60)
+    kcb_data = data_fetcher.get_index_kline("sh000688", days=400)
+    if len(kcb_data) > 0:
+        print(f"  获取成功: {len(kcb_data)}条, 最新日期={kcb_data.iloc[-1]['date'].strftime('%Y-%m-%d')}")
+
+    return sectors_data, index_data, margin_data, global_indices, cyb_data, kcb_data
 
 
 def compute_sector_heatmap(sectors_data, num_days=18):
@@ -540,8 +547,7 @@ def _backtest_html(bt):
                    f"<div class='stat-sub'>含{cf['with_margin_ann']}% vs 摘除{cf['without_margin_ann']}%</div></div>")
 
     return f"""
-<div class="chart-section">
-    <div class="chart-title">策略回测与自我进化 (板块轮动: 启动期买入/高潮期止盈/退潮期卖出, MRS控仓)</div>
+    <div class="sub-title">策略回测与自我进化 (板块轮动: 启动期买入/高潮期止盈/退潮期卖出, MRS控仓)</div>
     <div class="stat-grid">
         <div class="stat-card"><div class="stat-label">当前参数</div>
             <div class="stat-value" style="font-size:15px">Δ≥{p['buy_delta']} | {'高潮止盈' if p['exit_climax'] else '高潮不止盈'} | 最多{p['max_sectors']}板块</div>
@@ -564,12 +570,79 @@ def _backtest_html(bt):
         <div><div class="causal-h">最近交易</div>
             <table class="mini-table"><thead><tr><th>板块</th><th>买入</th><th>卖出</th><th>收益</th></tr></thead>
             {trade_rows}</table></div>
+    </div>"""
+
+
+def _etf_strategy_html(latest, market_data, bt):
+    """行业ETF投资策略: 明确买卖操作与具体仓位(每日更新)
+
+    逻辑: MRS定总仓位 -> 生命周期定标的 -> 启动期买入/发酵主升持有/高潮止盈/退潮卖出
+    单只仓位 = 总仓位中值 / 买入标的数, 上限20%(分散风控)
+    """
+    if not latest or not market_data:
+        return ""
+    import re
+    mrs = market_data['latest_mrs']
+    zone = market_data.get('turn_zone', '')
+    position = market_data['position']                    # 如 "4~6成"
+    nums = [int(x) for x in re.findall(r'\d+', position)]
+    mid_pct = round((nums[0] + nums[1]) / 2 * 10) if len(nums) >= 2 else 50
+    params = (bt or {}).get('params', {})
+    max_sectors = params.get('max_sectors', 3)
+    buy_delta = params.get('buy_delta', 5)
+
+    groups = {}
+    for name, v in latest.items():
+        groups.setdefault(v['stage'], []).append((name, v))
+    for g in groups.values():
+        g.sort(key=lambda x: (x[1]['delta'], x[1]['score']), reverse=True)
+
+    buys = groups.get('启动期', [])[:max_sectors]
+    per = min(20, round(mid_pct / len(buys))) if buys else 0
+
+    def _etf(name, v):
+        return f"{v['etf_name']}({v['etf_code']})" if v['etf_code'] else name
+
+    rows = ""
+    for name, v in buys:
+        rows += (f"<tr><td><span class='op-badge buy'>买入</span></td>"
+                 f"<td><b>{_etf(name, v)}</b></td><td class='pos'>≈{per}%</td>"
+                 f"<td class='reason'>启动期: 得分{v['score']}, Δ{v['delta']:+.1f}≥{buy_delta}, "
+                 f"早期分歧日介入, 跌破启动日低点止损</td></tr>")
+    for stage, badge, act, reason in [
+            ('发酵期', 'hold', '持有', '趋势发酵中, 持有为主, 回调至MA20附近可加仓'),
+            ('主升期', 'hold', '持有', '主升浪, 坚定持有, 不提前下车'),
+            ('高潮期', 'tp', '止盈', '高位动能衰竭(Δ转负), 分批止盈: 先减半, 跌破MA10清仓'),
+            ('退潮期', 'sell', '卖出', '资金退潮, 清仓回避, 不抄底')]:
+        for name, v in groups.get(stage, []):
+            rows += (f"<tr><td><span class='op-badge {badge}'>{act}</span></td>"
+                     f"<td><b>{_etf(name, v)}</b></td><td class='pos'>{'维持' if badge == 'hold' else ('减半→清' if badge == 'tp' else '清仓')}</td>"
+                     f"<td class='reason'>{stage}: 得分{v['score']}, Δ{v['delta']:+.1f} | {reason}</td></tr>")
+    if not rows:
+        rows = ("<tr><td colspan='4' style='text-align:center;color:#8b949e'>"
+                "当前无明确操作标的, 空仓/持仓观望, 等待启动期信号(Δ转正≥+" + str(buy_delta) + ")</td></tr>")
+
+    wait_stages = [s for s in ('震荡期', '冰点期') if groups.get(s)]
+    wait_txt = ('、'.join(f"{s}({len(groups[s])}个)" for s in wait_stages) +
+                " 板块观望: 震荡期做T不加仓, 冰点期等Δ转正") if wait_stages else ""
+
+    return f"""
+    <div class='strategy-head'>
+        <span class='strategy-anchor'>总仓位锚点: <b style='color:#f0f6fc'>MRS {mrs:.0f}({zone})</b>
+        → 建议总仓位 <b style='color:#f0f6fc'>{position}</b>;
+        买入标的 <b style='color:#f0f6fc'>{len(buys)}</b> 只, 单只≈<b style='color:#f0f6fc'>{per}%</b>
+        <span class='cb-sub'>(策略参数: Δ≥{buy_delta}, 最多{max_sectors}板块, 回测自进化每日校准)</span></span>
     </div>
-</div>"""
+    <table class='strategy-table'>
+        <thead><tr><th style='width:64px'>操作</th><th>标的ETF</th>
+        <th style='width:76px'>仓位</th><th>依据与风控</th></tr></thead>
+        <tbody>{rows}</tbody>
+    </table>
+    <div class='cb-sub' style='margin-bottom:4px'>{wait_txt}</div>"""
 
 
-def generate_html(heatmap_data, market_data, chan_chart, chan_text,
-                  cyb_chart, cyb_text, sector_chan, causal, bt):
+def generate_html(heatmap_data, market_data, idx_charts, idx_texts,
+                  sector_chan, causal, bt):
     """生成HTML看板"""
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -658,13 +731,20 @@ def generate_html(heatmap_data, market_data, chan_chart, chan_text,
             <div class='fc-structures'>{struct_html}</div>
         </div>"""
 
-    chan_banner = _chan_banner_html(chan_text) if chan_text else ""
-    cyb_banner = _chan_banner_html(cyb_text) if cyb_text else ""
+    idx_banners = {name: _chan_banner_html(t) for name, t in idx_texts.items()}
+    first_banner = next(iter(idx_banners.values()), "")
+    # 指数切换按钮(按可用指数动态生成)
+    idx_buttons = ''.join(
+        f'<button class="sc-level-btn idx-sel-btn{" active" if i == 0 else ""}" '
+        f'data-index="{n}">{n}</button>'
+        for i, n in enumerate(idx_charts))
 
+    strategy_html = _etf_strategy_html(heatmap_data['latest'] if heatmap_data else None,
+                                       market_data, bt)
     sector_table = _sector_table_html(heatmap_data['latest']) if heatmap_data else ""
     legend = _lifecycle_legend_html()
-    causal_html = _causal_html(causal)
     backtest_html = _backtest_html(bt)
+    # 因果推导仅作底层分析逻辑, 不在看板展示(causal结果已在控制台输出)
 
     # ---- 行业板块多周期缠论面板(放在因果面板之前) ----
     sector_chan_section = ""
@@ -692,10 +772,9 @@ def generate_html(heatmap_data, market_data, chan_chart, chan_text,
                         if heatmap_data else None)
     heatmap_json = json.dumps(heatmap_for_json, ensure_ascii=False) if heatmap_for_json else "null"
     market_json = json.dumps(market_data, ensure_ascii=False) if market_data else "null"
-    chan_json = json.dumps(chan_chart, ensure_ascii=False,
-                           cls=_NumpyEncoder) if chan_chart else "null"
-    cyb_json = json.dumps(cyb_chart, ensure_ascii=False,
-                          cls=_NumpyEncoder) if cyb_chart else "null"
+    chan_json = json.dumps(idx_charts, ensure_ascii=False,
+                           cls=_NumpyEncoder) if idx_charts else "null"
+    banners_json = json.dumps(idx_banners, ensure_ascii=False) if idx_banners else "null"
     sector_chan_json = json.dumps(sector_chan, ensure_ascii=False,
                                   cls=_NumpyEncoder) if sector_chan else "null"
     equity_json = json.dumps(bt['equity'], ensure_ascii=False) if bt else "null"
@@ -705,7 +784,7 @@ def generate_html(heatmap_data, market_data, chan_chart, chan_text,
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>市场趋势监测看板 V3</title>
+<title>大盘与行业走势分析看板</title>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <style>
 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
@@ -764,6 +843,19 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
 .stat-sub {{ font-size: 11px; color: #8b949e; margin-top: 3px; }}
 .bt-cols {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }}
 .log-list {{ font-size: 12px; color: #c9d1d9; padding-left: 18px; line-height: 1.9; }}
+.sub-title {{ font-size: 13px; font-weight: 600; color: #c9d1d9; margin: 20px 0 10px; padding-bottom: 6px; border-bottom: 1px dashed #30363d; }}
+.strategy-head {{ margin-bottom: 10px; font-size: 13px; color: #8b949e; line-height: 1.8; }}
+.strategy-anchor {{ background: #0d1117; border: 1px solid #21262d; border-radius: 6px; padding: 8px 12px; display: inline-block; }}
+.strategy-table {{ width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 6px; }}
+.strategy-table th, .strategy-table td {{ padding: 8px 10px; border-bottom: 1px solid #21262d; text-align: left; vertical-align: top; }}
+.strategy-table th {{ color: #8b949e; font-size: 12px; font-weight: 500; }}
+.op-badge {{ padding: 2px 10px; border-radius: 4px; font-size: 12px; font-weight: 700; white-space: nowrap; }}
+.op-badge.buy {{ background: rgba(239,68,68,0.18); color: #f87171; }}
+.op-badge.hold {{ background: rgba(234,179,8,0.15); color: #eab308; }}
+.op-badge.tp {{ background: rgba(168,85,247,0.18); color: #c084fc; }}
+.op-badge.sell {{ background: rgba(59,130,246,0.18); color: #60a5fa; }}
+.strategy-table .pos {{ color: #f0f6fc; font-weight: 700; white-space: nowrap; }}
+.strategy-table .reason {{ color: #8b949e; font-size: 12px; line-height: 1.6; }}
 .sc-controls {{ display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }}
 .sc-select {{ background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px 12px; font-size: 13px; outline: none; }}
 .sc-level-btns {{ display: flex; gap: 6px; }}
@@ -822,7 +914,7 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
 <body>
 
 <div class="header">
-    <h1>市场趋势监测看板 <span style="font-size:12px;color:#8b949e">V3 缠论·量柱·因果·进化</span></h1>
+    <h1>大盘与行业走势分析看板 <span style="font-size:12px;color:#8b949e">缠论·量柱·多周期·MRS·ETF策略</span></h1>
     <div class="update-time">数据更新时间: {now_str}</div>
 </div>
 
@@ -834,72 +926,18 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
     <b style="color:#4ade80">连续2日向上突破60/45/30=逐级加仓信号(绿▲)</b>,
     <b style="color:#f87171">连续2日向下跌破60/45/30=逐级减仓信号(红▼)</b>;
     MRS顶背离/缠论顶背驰+1卖 与跌破变盘点共振=确定性卖点, 底背驰/1买与突破变盘点共振=确定性买点。<br>
-    <strong>第二步 选板块</strong> —— 看热力图与生命周期表:
-    只在<b style="color:#f97316">启动期</b>(低位/中位+Δ≥+5, 早期分歧日)买入对应ETF;
-    <b style="color:#ef4444">发酵期/主升期</b>持有;
-    <b style="color:#a855f7">高潮期</b>(高位+Δ转负)分批止盈;
-    <b style="color:#3b82f6">退潮期</b>卖出;
-    <b style="color:#22c55e">冰点期</b>观望等Δ转正。不追加速日/高潮日。<br>
-    <strong>第三步 验信号</strong> —— 看因果面板与回测面板:
-    格兰杰显著=资金有预测力; 强联动外盘隔夜大跌→次日防守;
-    历史类比与MRS方向一致则加仓信号增强; 回测面板展示策略净值与参数进化轨迹。
+    <strong>第二步 看大盘</strong> —— 指数多周期缠论图(上证/创业板/科创50切换):
+    日线定方向与中枢位置, 30/60分钟找精确买卖点; 三类买点(底背驰1买/回踩2买/突破回抽3买)介入,
+    三类卖点(顶背驰1卖/反抽2卖/跌破回抽3卖)离场; 推演虚线标注未来结构事件时点。<br>
+    <strong>第三步 选行业</strong> —— 行业ETF投资策略模块(每日更新):
+    按策略表执行<b style="color:#f0f6fc">明确买卖与具体仓位</b> —
+    <b style="color:#f97316">启动期</b>买入对应ETF(早期分歧日介入),
+    <b style="color:#ef4444">发酵期/主升期</b>持有,
+    <b style="color:#a855f7">高潮期</b>分批止盈,
+    <b style="color:#3b82f6">退潮期</b>卖出; 不追加速日/高潮日。
 </div>
 
 {summary_html}
-{chan_banner}
-
-<div class="chart-section">
-    <div class="chart-title">上证指数多周期缠论结构图 (日/60/30/15/5分钟联立: 笔/中枢/买卖点/波浪 + MACD背驰 + 量柱 + 结构推演虚线)</div>
-    <div class="sc-controls">
-        <div class="sc-level-btns" id="sh-level-btns">
-            <button class="sc-level-btn idx-level-btn active" data-level="日">日线</button>
-            <button class="sc-level-btn idx-level-btn" data-level="60min">60分钟</button>
-            <button class="sc-level-btn idx-level-btn" data-level="30min">30分钟</button>
-            <button class="sc-level-btn idx-level-btn" data-level="15min">15分钟</button>
-            <button class="sc-level-btn idx-level-btn" data-level="5min">5分钟</button>
-        </div>
-    </div>
-    <div id="sh-chan-state" class="sc-state">加载中...</div>
-    <div class="chart-container">
-        <div id="chan" class="chart-mobile-h" style="width: 100%; height: 880px;"></div>
-    </div>
-</div>
-
-{cyb_banner}
-
-<div class="chart-section">
-    <div class="chart-title">创业板指多周期缠论结构图 (日/60/30/15/5分钟联立: 笔/中枢/买卖点/波浪 + MACD背驰 + 量柱 + 结构推演虚线)</div>
-    <div class="sc-controls">
-        <div class="sc-level-btns" id="cyb-level-btns">
-            <button class="sc-level-btn idx-level-btn active" data-level="日">日线</button>
-            <button class="sc-level-btn idx-level-btn" data-level="60min">60分钟</button>
-            <button class="sc-level-btn idx-level-btn" data-level="30min">30分钟</button>
-            <button class="sc-level-btn idx-level-btn" data-level="15min">15分钟</button>
-            <button class="sc-level-btn idx-level-btn" data-level="5min">5分钟</button>
-        </div>
-    </div>
-    <div id="cyb-chan-state" class="sc-state">加载中...</div>
-    <div class="chart-container">
-        <div id="cyb" class="chart-mobile-h" style="width: 100%; height: 880px;"></div>
-    </div>
-</div>
-
-{sector_chan_section}
-
-{causal_html}
-
-<div class="table-section">
-    <div class="chart-title">板块生命周期与ETF操作表</div>
-    {legend}
-    {sector_table}
-</div>
-
-<div class="chart-section">
-    <div class="chart-title">行业板块趋势热力图 (横截面相对强度, 单元格=得分, 黄框=资金流入/蓝框=流出)</div>
-    <div class="chart-container" id="heatmap-wrap">
-        <div id="heatmap" class="chart-mobile-h" style="width: 100%; height: 560px;"></div>
-    </div>
-</div>
 
 <div class="chart-section">
     <div class="chart-title">市场环境监测 (K线 + MRS综合分 + 四因子分解)</div>
@@ -908,38 +946,78 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
     </div>
 </div>
 
-{backtest_html}
+<div class="chart-section">
+    <div class="chart-title">指数多周期缠论结构图 (指数切换 × 日/60/30/15/5分钟联立: 笔/中枢/买卖点/波浪 + MACD背驰 + 结构推演虚线)</div>
+    <div class="sc-controls">
+        <div class="sc-level-btns" id="idx-index-btns">{idx_buttons}</div>
+        <div class="sc-level-btns" id="idx-level-btns">
+            <button class="sc-level-btn idx-level-btn active" data-level="日">日线</button>
+            <button class="sc-level-btn idx-level-btn" data-level="60min">60分钟</button>
+            <button class="sc-level-btn idx-level-btn" data-level="30min">30分钟</button>
+            <button class="sc-level-btn idx-level-btn" data-level="15min">15分钟</button>
+            <button class="sc-level-btn idx-level-btn" data-level="5min">5分钟</button>
+        </div>
+    </div>
+    <div id="idx-chan-banner">{first_banner}</div>
+    <div id="idx-chan-state" class="sc-state">加载中...</div>
+    <div class="chart-container">
+        <div id="chan" class="chart-mobile-h" style="width: 100%; height: 880px;"></div>
+    </div>
+</div>
+
+<div class="chart-section" id="etf-strategy">
+    <div class="chart-title">行业ETF投资策略 <span style="font-size:12px;color:#8b949e;font-weight:400">每日更新 · 明确买卖策略与具体仓位</span></div>
+    {strategy_html}
+    <div class="sub-title">板块生命周期全景</div>
+    {legend}
+    {sector_table}
+    <div class="sub-title">行业板块趋势热力图 (横截面相对强度, 单元格=得分, 黄框=资金流入/蓝框=流出)</div>
+    <div class="chart-container" id="heatmap-wrap">
+        <div id="heatmap" class="chart-mobile-h" style="width: 100%; height: 560px;"></div>
+    </div>
+    {backtest_html}
+</div>
+
+{sector_chan_section}
 
 <div class="footer">
-    数据来源: akshare(申万行业指数/上证指数/沪深两融/美股指数) |
+    数据来源: akshare(申万行业指数/上证/创业板/科创50/沪深两融/美股指数) |
     技术面: 缠论(分型·笔·中枢·背驰·买卖点)+简化波浪+量柱理论 |
     量化: 板块横截面RPS40%+趋势位置25%+量能健康20%+RPS5 15% | 市场MRS=价格35%+量能20%+两融25%+宽度20% |
-    进化: 网格寻优+走前验证+反事实回测(因果Alpha)
+    进化: 网格寻优+走前验证+反事实回测(因果Alpha, 底层逻辑)
 </div>
 
 <script>
 var heatmapData = {heatmap_json};
 var marketData = {market_json};
 var chanData = {chan_json};
-var cybData = {cyb_json};
+var idxBanners = {banners_json};
 var sectorChanData = {sector_chan_json};
 var equityData = {equity_json};
 
-// ===== 图0: 指数多周期缠论结构图(工厂函数, 日/60/30/15/5分钟切换) =====
-function createIdxChanChart(elId, btnsId, stateId, levelData) {{
-    if (!levelData) return;
+// ===== 图0: 指数多周期缠论结构图(工厂函数, 指数切换 × 日/60/30/15/5分钟切换) =====
+function createIdxChanChart(elId, idxBtnsId, lvlBtnsId, stateId, bannerId, allData) {{
+    if (!allData) return;
     var chartEl = document.getElementById(elId);
     if (!chartEl) return;
     var chart = echarts.init(chartEl);
     var stateEl = document.getElementById(stateId);
+    var bannerEl = document.getElementById(bannerId);
     var levelNames = {{ '日': '日线', '60min': '60分钟', '30min': '30分钟',
                        '15min': '15分钟', '5min': '5分钟' }};
     var evColors = {{ 'up': '#ef4444', 'range': '#eab308', 'down': '#22c55e' }};
+    var curIdx = Object.keys(allData)[0];
+    var curLevel = '日';
 
-    function render(level) {{
-        var d = levelData[level];
+    function render() {{
+        var levelData = allData[curIdx] || {{}};
+        var d = levelData[curLevel];
+        // 横幅: 当前指数的日线缠论/量柱/推演状态
+        if (bannerEl && typeof idxBanners !== 'undefined') {{
+            bannerEl.innerHTML = idxBanners[curIdx] || '';
+        }}
         if (!d || !d.dates || !d.dates.length) {{
-            stateEl.textContent = levelNames[level] + ': 无数据';
+            stateEl.textContent = curIdx + ' ' + (levelNames[curLevel] || curLevel) + ': 无数据';
             chart.clear();
             return;
         }}
@@ -1025,8 +1103,9 @@ function createIdxChanChart(elId, btnsId, stateId, levelData) {{
             return {{ value: v, itemStyle: {{ color: color }} }};
         }});
 
-        // 状态行: 当前级别的缠论结构状态
-        stateEl.innerHTML = '<b style="color:#58a6ff">' + levelNames[level] + '</b> ' + d.state_text;
+        // 状态行: 当前指数+级别的缠论结构状态
+        stateEl.innerHTML = '<b style="color:#58a6ff">' + curIdx + ' · ' +
+            levelNames[curLevel] + '</b> ' + d.state_text;
 
         // 初始缩放窗口: 最多显示约200根K线
         var startPct = Math.max(0, 100 - Math.round(200 / histLen * 100));
@@ -1119,23 +1198,32 @@ function createIdxChanChart(elId, btnsId, stateId, levelData) {{
         chart.setOption(option, true);
     }}
 
-    // 级别切换按钮
-    var btns = document.querySelectorAll('#' + btnsId + ' .idx-level-btn');
-    btns.forEach(function(b) {{
+    // 指数切换按钮
+    var idxBtns = document.querySelectorAll('#' + idxBtnsId + ' .idx-sel-btn');
+    idxBtns.forEach(function(b) {{
         b.addEventListener('click', function() {{
-            btns.forEach(function(x) {{ x.classList.remove('active'); }});
+            idxBtns.forEach(function(x) {{ x.classList.remove('active'); }});
             b.classList.add('active');
-            render(b.getAttribute('data-level'));
+            curIdx = b.getAttribute('data-index');
+            render();
         }});
     }});
-    render('日');
+    // 级别切换按钮
+    var lvlBtns = document.querySelectorAll('#' + lvlBtnsId + ' .idx-level-btn');
+    lvlBtns.forEach(function(b) {{
+        b.addEventListener('click', function() {{
+            lvlBtns.forEach(function(x) {{ x.classList.remove('active'); }});
+            b.classList.add('active');
+            curLevel = b.getAttribute('data-level');
+            render();
+        }});
+    }});
+    render();
     window.addEventListener('resize', function() {{ chart.resize(); }});
 }}
 
-createIdxChanChart('chan', 'sh-level-btns', 'sh-chan-state', chanData);
-
-// ===== 图0b: 创业板指多周期缠论结构图(与上证共用工厂函数) =====
-createIdxChanChart('cyb', 'cyb-level-btns', 'cyb-chan-state', cybData);
+createIdxChanChart('chan', 'idx-index-btns', 'idx-level-btns',
+                   'idx-chan-state', 'idx-chan-banner', chanData);
 
 // ===== 图0c: 行业板块多周期缠论结构图(日/60min/30min切换, 单实例平滑更新) =====
 (function() {{
@@ -1498,7 +1586,7 @@ def main():
     print("=" * 60)
     print()
 
-    sectors_data, index_data, margin_data, global_indices, cyb_data = fetch_all_data()
+    sectors_data, index_data, margin_data, global_indices, cyb_data, kcb_data = fetch_all_data()
     if not sectors_data:
         print("\n错误: 无法获取行业板块数据，请检查网络连接")
         return
@@ -1515,16 +1603,21 @@ def main():
 
     market_data = compute_market_trend(index_data, margin_data, regime_full)
 
-    # --- 缠论 + 量柱 (上证 + 创业板) ---
-    chan_chart, chan_text = compute_chan_vol(index_data, "上证指数")
-    cyb_chart, cyb_text = (None, None)
+    # --- 缠论 + 量柱 (上证/创业板/科创50 多周期联立) ---
+    idx_charts, idx_texts = {}, {}
+    c, t = compute_chan_vol(index_data, "上证指数")
+    idx_charts['上证指数'], idx_texts['上证指数'] = c, t
     if cyb_data is not None and len(cyb_data) > 0:
-        cyb_chart, cyb_text = compute_chan_vol(cyb_data, "创业板指")
+        c, t = compute_chan_vol(cyb_data, "创业板指")
+        idx_charts['创业板指'], idx_texts['创业板指'] = c, t
+    if kcb_data is not None and len(kcb_data) > 0:
+        c, t = compute_chan_vol(kcb_data, "科创50")
+        idx_charts['科创50'], idx_texts['科创50'] = c, t
 
     # --- 行业板块多周期缠论 (日/60min/30min) ---
     sector_chan = compute_sector_chan(sectors_data)
 
-    # --- 因果推导 ---
+    # --- 因果推导(仅作底层分析逻辑, 不在看板展示) ---
     causal = compute_causal(index_data, margin_data, global_indices, regime_full)
 
     # --- 回测与自进化 ---
@@ -1534,8 +1627,8 @@ def main():
     print("\n" + "=" * 60)
     print("步骤10: 生成HTML看板")
     print("=" * 60)
-    html = generate_html(heatmap_data, market_data, chan_chart, chan_text,
-                         cyb_chart, cyb_text, sector_chan, causal, bt)
+    html = generate_html(heatmap_data, market_data, idx_charts, idx_texts,
+                         sector_chan, causal, bt)
 
     with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
         f.write(html)
