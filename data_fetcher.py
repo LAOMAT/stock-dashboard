@@ -215,30 +215,17 @@ def get_margin_data(days=60):
     except Exception as e:
         print(f"  沪市两融获取失败: {e}")
 
-    # 深市两融（逐日获取,只取增量部分以提速）
+    # 深市两融(改用macro_china_market_margin_sz批量接口, 旧逐日接口已失效)
     try:
-        sz_records = []
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=days * 2)
-        current = start_date
-        while current <= end_date:
-            date_str = current.strftime("%Y%m%d")
-            try:
-                df_sz = ak.stock_margin_szse(date=date_str)
-                if df_sz is not None and len(df_sz) > 0:
-                    row = df_sz.iloc[0]
-                    sz_records.append({
-                        'date': pd.to_datetime(date_str, format='%Y%m%d'),
-                        'balance': pd.to_numeric(row.get('融资余额', 0), errors='coerce')
-                    })
-            except Exception:
-                pass
-            current += timedelta(days=1)
-
-        if sz_records:
-            df_sz_all = pd.DataFrame(sz_records)
-            new_parts.append(df_sz_all)
-            print(f"  深市两融: {len(df_sz_all)}条")
+        df_sz = ak.macro_china_market_margin_sz()
+        if df_sz is not None and len(df_sz) > 0:
+            df_sz['date'] = pd.to_datetime(df_sz['日期'])
+            df_sz['balance'] = pd.to_numeric(df_sz['融资余额'], errors='coerce')
+            df_sz = df_sz[['date', 'balance']].dropna(subset=['balance'])
+            # 只取最近 days*2 天(与沪市对齐)
+            df_sz = df_sz.tail(days * 2)
+            new_parts.append(df_sz)
+            print(f"  深市两融: {len(df_sz)}条")
     except Exception as e:
         print(f"  深市两融获取失败: {e}")
 
