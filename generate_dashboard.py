@@ -767,6 +767,44 @@ def generate_html(heatmap_data, market_data, idx_charts, idx_texts,
     """生成HTML看板"""
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
+    # === 数据源截止日期标注(大盘先行展示模式) ===
+    # 各模块取其最大日期, 显示在页头
+    def _last_d(x):
+        return x[-1] if isinstance(x, list) and x else ""
+    idx_max_dates = {}
+    for name, levels in (idx_charts or {}).items():
+        d = (levels.get('日') or {}).get('dates') or []
+        if d:
+            idx_max_dates[name] = d[-1]
+    idx_latest = max(idx_max_dates.values()) if idx_max_dates else ""
+
+    sector_dates = []
+    for sname, sv in (sector_chan or {}).items():
+        d = (sv.get('k_daily') or {}).get('dates') or []
+        if d:
+            sector_dates.append(d[-1])
+    sector_latest = max(sector_dates) if sector_dates else ""
+
+    hm_dates = (heatmap_data or {}).get('dates') or []
+    heatmap_latest = hm_dates[-1] if hm_dates else ""
+
+    mrs_dates = (market_data or {}).get('dates') or []
+    mrs_latest = mrs_dates[-1] if mrs_dates else ""
+
+    parts = []
+    if idx_latest:
+        parts.append(f"三大指数截至 <b style='color:#58a6ff'>{idx_latest}</b>")
+    lag_parts = [x[0] for x in
+                 [(f"行业板块缠论截至 {sector_latest}", sector_latest and sector_latest != idx_latest),
+                  (f"热力图/生命周期截至 {heatmap_latest}", heatmap_latest and heatmap_latest != idx_latest),
+                  (f"MRS市场环境截至 {mrs_latest}", mrs_latest and mrs_latest != idx_latest)]
+                 if x[1]]
+    date_note = ""
+    if idx_latest:
+        date_note = " ｜ ".join(parts + lag_parts)
+        if lag_parts:
+            date_note += "（行业/两融数据源T+1更新）"
+
     # ---- MRS摘要面板 ----
     summary_html = ""
     if market_data:
@@ -1069,7 +1107,7 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
 
 <div class="header">
     <h1>大盘与行业走势分析看板 <span style="font-size:12px;color:#8b949e">缠论·量柱·多周期·MRS·ETF策略</span></h1>
-    <div class="update-time">数据更新时间: {now_str}</div>
+    <div class="update-time">数据更新时间: {now_str}{" · " + date_note if date_note else ""}</div>
 </div>
 
 <div class="instructions">
