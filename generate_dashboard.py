@@ -466,7 +466,7 @@ def compute_backtest(heatmap_data, regime_full, regime_no_margin, index_data=Non
         'stats': {k: full[k] for k in ('n_trades', 'win_rate', 'total_ret',
                                        'ann_ret', 'max_dd', 'holdings_now',
                                        'holdings_detail')},
-        'trades_recent': full['trades'][-10:],
+        'trades_recent': full['trades'][-15:],
         'equity': equity_payload,
         'benchmark': benchmark_payload,
         'counterfactual': result['counterfactual'],
@@ -563,10 +563,20 @@ def _backtest_html(bt):
     cf = bt.get('counterfactual') or {}
     holdings = '、'.join(s['holdings_now']) if s['holdings_now'] else '空仓'
     log_rows = "".join(f"<li>{line}</li>" for line in bt['evolve_log'])
-    trade_rows = "".join(
-        f"<tr><td>{t['sector']}</td><td>{t['entry_date']}</td><td>{t['exit_date']}</td>"
-        f"<td style='color:{'#ef4444' if t['ret'] > 0 else '#22c55e'}'>{t['ret']:+}%</td></tr>"
-        for t in reversed(bt.get('trades_recent', [])))
+    trade_rows = ""
+    for t in reversed(bt.get('trades_recent', [])):
+        if t.get('type') == '买入':
+            trade_rows += (f"<tr><td><span style='color:#ef4444;font-weight:600'>买入</span></td>"
+                           f"<td>{t['sector']}</td><td>{t['entry_date']}</td>"
+                           f"<td>{t['entry_price']}</td><td>-</td><td>-</td>"
+                           f"<td style='color:#8b949e'>{t.get('reason','')}</td></tr>")
+        else:
+            ret_color = '#ef4444' if t['ret'] > 0 else '#22c55e'
+            trade_rows += (f"<tr><td><span style='color:#22c55e;font-weight:600'>卖出</span></td>"
+                           f"<td>{t['sector']}</td><td>{t['entry_date']}→{t['exit_date']}</td>"
+                           f"<td>{t['entry_price']}</td><td>{t['exit_price']}</td>"
+                           f"<td style='color:{ret_color}'>{t['ret']:+}%</td>"
+                           f"<td style='color:#8b949e'>{t.get('exit_type','')}·{t.get('reason','')}</td></tr>")
     cf_html = ""
     if cf:
         alpha_color = '#ef4444' if cf['causal_alpha'] > 0 else '#22c55e'
@@ -611,8 +621,8 @@ def _backtest_html(bt):
     <div id="equity" class="chart-mobile-h" style="width: 100%; height: 280px;"></div>
     <div class="bt-cols">
         <div>{hold_table}</div>
-        <div><div class="causal-h">最近交易</div>
-            <table class="mini-table"><thead><tr><th>板块</th><th>买入</th><th>卖出</th><th>收益</th></tr></thead>
+        <div><div class="causal-h">最近交易明细</div>
+            <table class="mini-table"><thead><tr><th>类型</th><th>板块</th><th>日期</th><th>买价</th><th>卖价</th><th>收益</th><th>说明</th></tr></thead>
             {trade_rows}</table>
             <div class="causal-h" style="margin-top:12px">进化日志(参数持久化, 过拟合防护)</div>
             <ul class="log-list">{log_rows}</ul></div>

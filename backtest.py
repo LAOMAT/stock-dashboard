@@ -94,8 +94,13 @@ def run_backtest(scored, mrs_series, params, use_margin_factor=True):
                 entry = holdings.pop(name)
                 ret = row['close'] / entry['price'] - 1
                 trades.append({'sector': name,
+                               'type': '卖出',
+                               'exit_type': '全部卖出',
+                               'reason': '高潮止盈' if stage == '高潮期' else '退潮止损',
                                'entry_date': entry['date'].strftime('%Y-%m-%d'),
                                'exit_date': d.strftime('%Y-%m-%d'),
+                               'entry_price': round(float(entry['price']), 2),
+                               'exit_price': round(float(row['close']), 2),
                                'ret': round(ret * 100, 2)})
 
         # 2. 买入判定(收盘执行)
@@ -116,6 +121,15 @@ def run_backtest(scored, mrs_series, params, use_margin_factor=True):
             for _, name in cands[:room]:
                 g = panel[name]
                 holdings[name] = {'date': d, 'price': g.loc[d, 'close']}
+                trades.append({'sector': name,
+                               'type': '买入',
+                               'exit_type': '',
+                               'reason': '启动期建仓',
+                               'entry_date': d.strftime('%Y-%m-%d'),
+                               'exit_date': '',
+                               'entry_price': round(float(g.loc[d, 'close']), 2),
+                               'exit_price': None,
+                               'ret': None})
 
         # 3. 当日组合收益 = 持仓板块当日收益均值 × 仓位系数
         if holdings:
@@ -136,8 +150,9 @@ def run_backtest(scored, mrs_series, params, use_margin_factor=True):
     dd = (eq / eq.cummax() - 1).min()
     days = max(1, (eq.index[-1] - eq.index[0]).days)
     ann_ret = (1 + total_ret) ** (365 / days) - 1
-    win_rate = (np.mean([1 if t['ret'] > 0 else 0 for t in trades])
-                if trades else 0.0)
+    sell_trades = [t for t in trades if t.get('type') == '卖出']
+    win_rate = (np.mean([1 if t['ret'] > 0 else 0 for t in sell_trades])
+                if sell_trades else 0.0)
 
     # 持仓详情(含买入日/买入价/当前价/浮盈/仓位权重)
     holdings_detail = []
@@ -162,7 +177,7 @@ def run_backtest(scored, mrs_series, params, use_margin_factor=True):
     return {
         'equity': eq,
         'trades': trades,
-        'n_trades': len(trades),
+        'n_trades': len(sell_trades),
         'win_rate': round(win_rate * 100, 1),
         'total_ret': round(total_ret * 100, 2),
         'ann_ret': round(ann_ret * 100, 2),
