@@ -139,6 +139,26 @@ def run_backtest(scored, mrs_series, params, use_margin_factor=True):
     win_rate = (np.mean([1 if t['ret'] > 0 else 0 for t in trades])
                 if trades else 0.0)
 
+    # 持仓详情(含买入日/买入价/当前价/浮盈/仓位权重)
+    holdings_detail = []
+    if holdings:
+        last_d = all_dates[-1]
+        n_held = len(holdings)
+        weight = round(1.0 / n_held * 100, 1) if n_held else 0
+        for name, info in holdings.items():
+            g = panel[name]
+            cur_price = float(g.loc[last_d, 'close']) if last_d in g.index else info['price']
+            ret_pct = round((cur_price / info['price'] - 1) * 100, 2)
+            holdings_detail.append({
+                'sector': name,
+                'entry_date': info['date'].strftime('%Y-%m-%d'),
+                'entry_price': round(float(info['price']), 2),
+                'current_price': round(cur_price, 2),
+                'return': ret_pct,
+                'weight': weight,
+            })
+        holdings_detail.sort(key=lambda x: x['return'], reverse=True)
+
     return {
         'equity': eq,
         'trades': trades,
@@ -148,6 +168,7 @@ def run_backtest(scored, mrs_series, params, use_margin_factor=True):
         'ann_ret': round(ann_ret * 100, 2),
         'max_dd': round(dd * 100, 2),
         'holdings_now': list(holdings.keys()),
+        'holdings_detail': holdings_detail,
     }
 
 

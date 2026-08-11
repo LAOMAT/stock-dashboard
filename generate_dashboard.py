@@ -406,7 +406,7 @@ def compute_causal(index_data, margin_data, global_indices, regime_full):
     return suite
 
 
-def compute_backtest(heatmap_data, regime_full, regime_no_margin):
+def compute_backtest(heatmap_data, regime_full, regime_no_margin, index_data=None):
     """策略回测与自我进化"""
     print("\n" + "=" * 60)
     print("步骤9: 策略回测与自我进化")
@@ -430,16 +430,45 @@ def compute_backtest(heatmap_data, regime_full, regime_no_margin):
 
     # 净值曲线转可序列化结构
     eq = full['equity']
+    eq_dates = [d.strftime('%Y-%m-%d') for d in eq.index]
     equity_payload = {
-        'dates': [d.strftime('%Y-%m-%d') for d in eq.index],
+        'dates': eq_dates,
         'values': [round(float(v), 4) for v in eq.values],
     }
+
+    # 上证指数基准(与净值日期对齐, 归一化为1.0起点)
+    benchmark_payload = {'dates': eq_dates, 'values': []}
+    if index_data is not None and len(index_data) > 0:
+        idx = index_data.set_index(pd.to_datetime(index_data['date']))
+        eq_ts = pd.to_datetime(eq_dates)
+        idx_close = idx['close'].astype(float)
+        first_val = None
+        for d in eq_ts:
+            if d in idx_close.index:
+                v = float(idx_close.loc[d])
+                if first_val is None:
+                    first_val = v
+                benchmark_payload['values'].append(round(v / first_val, 4))
+            else:
+                benchmark_payload['values'].append(None)
+        # 前向填充缺失值
+        prev = None
+        for i, v in enumerate(benchmark_payload['values']):
+            if v is None and prev is not None:
+                benchmark_payload['values'][i] = prev
+            elif v is not None:
+                prev = v
+    else:
+        benchmark_payload['values'] = [None] * len(eq_dates)
+
     return {
         'params': result['params'],
         'stats': {k: full[k] for k in ('n_trades', 'win_rate', 'total_ret',
-                                       'ann_ret', 'max_dd', 'holdings_now')},
+                                       'ann_ret', 'max_dd', 'holdings_now',
+                                       'holdings_detail')},
         'trades_recent': full['trades'][-10:],
         'equity': equity_payload,
+        'benchmark': benchmark_payload,
         'counterfactual': result['counterfactual'],
         'evolve_log': result['evolve_log'],
         'oos_perf': result['oos_perf'],
@@ -545,8 +574,24 @@ def _backtest_html(bt):
                    f"<div class='stat-value' style='color:{alpha_color}'>{cf['causal_alpha']:+}%</div>"
                    f"<div class='stat-sub'>含{cf['with_margin_ann']}% vs 摘除{cf['without_margin_ann']}%</div></div>")
 
+    # 持仓详情表
+    hd = s.get('holdings_detail') or []
+    if hd:
+        hold_rows = "".join(
+            f"<tr><td>{h['sector']}</td><td>{h['entry_date']}</td>"
+            f"<td>{h['entry_price']}</td><td>{h['current_price']}</td>"
+            f"<td style='color:{'#ef4444' if h['return'] > 0 else '#22c55e'}'>{h['return']:+}%</td>"
+            f"<td>{h['weight']}%</td></tr>"
+            for h in hd)
+        hold_table = (f"<div class='causal-h'>当前持仓 ({len(hd)}只, 等权分配)</div>"
+                      f"<table class='mini-table'><thead><tr>"
+                      f"<th>板块</th><th>买入日</th><th>买入价</th><th>现价</th>"
+                      f"<th>浮盈</th><th>仓位</th></tr></thead>{hold_rows}</table>")
+    else:
+        hold_table = "<div class='causal-h'>当前持仓: 空仓</div>"
+
     return f"""
-    <div class="sub-title">策略回测与自我进化 (板块轮动: 启动期买入/高潮期止盈/退潮期卖出, MRS控仓)</div>
+    <div class="sub-title">行业ETF量化策略 (板块轮动: 启动期买入/高潮期止盈/退潮期卖出, MRS控仓)</div>
     <div class="stat-grid">
         <div class="stat-card"><div class="stat-label">当前参数</div>
             <div class="stat-value" style="font-size:15px">Δ≥{p['buy_delta']} | {'高潮止盈' if p['exit_climax'] else '高潮不止盈'} | 最多{p['max_sectors']}板块</div>
@@ -559,16 +604,18 @@ def _backtest_html(bt):
         <div class="stat-card"><div class="stat-label">胜率</div>
             <div class="stat-value">{s['win_rate']}%</div>
             <div class="stat-sub">共{s['n_trades']}笔交易</div></div>
-        <div class="stat-card"><div class="stat-label">策略当前持仓</div>
+        <div class="stat-card"><div class="stat-label">当前持仓</div>
             <div class="stat-value" style="font-size:15px">{holdings}</div></div>
         {cf_html}
     </div>
-    <div id="equity" class="chart-mobile-h" style="width: 100%; height: 260px;"></div>
+    <div id="equity" class="chart-mobile-h" style="width: 100%; height: 280px;"></div>
     <div class="bt-cols">
-        <div><div class="causal-h">进化日志(参数持久化, 过拟合防护)</div><ul class="log-list">{log_rows}</ul></div>
+        <div>{hold_table}</div>
         <div><div class="causal-h">最近交易</div>
             <table class="mini-table"><thead><tr><th>板块</th><th>买入</th><th>卖出</th><th>收益</th></tr></thead>
-            {trade_rows}</table></div>
+            {trade_rows}</table>
+            <div class="causal-h" style="margin-top:12px">进化日志(参数持久化, 过拟合防护)</div>
+            <ul class="log-list">{log_rows}</ul></div>
     </div>"""
 
 
@@ -841,6 +888,7 @@ def generate_html(heatmap_data, market_data, idx_charts, idx_texts,
     sector_chan_json = json.dumps(sector_chan, ensure_ascii=False,
                                   cls=_NumpyEncoder) if sector_chan else "null"
     equity_json = json.dumps(bt['equity'], ensure_ascii=False) if bt else "null"
+    benchmark_json = json.dumps(bt.get('benchmark'), ensure_ascii=False) if bt else "null"
 
     html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1090,6 +1138,7 @@ var chanData = {chan_json};
 var idxBanners = {banners_json};
 var sectorChanData = {sector_chan_json};
 var equityData = {equity_json};
+var benchmarkData = {benchmark_json};
 
 // ===== 图0: 指数多周期缠论结构图(工厂函数, 指数切换 × 日/60/30/15/5分钟切换) =====
 function createIdxChanChart(elId, idxBtnsId, lvlBtnsId, stateId, bannerId, allData) {{
@@ -1621,35 +1670,47 @@ createIdxChanChart('chan', 'idx-index-btns', 'idx-level-btns',
     window.addEventListener('resize', function() {{ chart.resize(); }});
 }})();
 
-// ===== 图3: 策略净值曲线 =====
+// ===== 图3: 策略净值曲线(叠加上证指数基准) =====
 (function() {{
     if (!equityData) return;
     var el = document.getElementById('equity');
     if (!el) return;
     var chart = echarts.init(el);
+    var series = [{{
+        name: '策略净值', type: 'line', data: equityData.values,
+        symbol: 'none', smooth: true,
+        lineStyle: {{ color: '#58a6ff', width: 2 }},
+        areaStyle: {{ color: new echarts.graphic.LinearGradient(0,0,0,1,[
+            {{ offset: 0, color: 'rgba(88,166,255,0.25)' }},
+            {{ offset: 1, color: 'rgba(88,166,255,0.02)' }}]) }},
+        markLine: {{ silent: true, symbol: 'none',
+            lineStyle: {{ color: '#6b7280', type: 'dashed', width: 1 }},
+            data: [{{ yAxis: 1.0, label: {{ formatter: '成本线', color: '#8b949e', fontSize: 9 }} }}] }}
+    }}];
+    if (benchmarkData && benchmarkData.values) {{
+        series.push({{
+            name: '上证指数', type: 'line', data: benchmarkData.values,
+            symbol: 'none', smooth: false,
+            lineStyle: {{ color: '#f97316', width: 1.5, type: 'dashed' }},
+        }});
+    }}
     var option = {{
         tooltip: {{ trigger: 'axis',
             backgroundColor: 'rgba(22,27,34,0.95)', borderColor: '#30363d',
             textStyle: {{ color: '#c9d1d9', fontSize: 12 }} }},
-        grid: {{ top: 20, bottom: 40, left: 60, right: 20 }},
+        legend: {{ show: true, top: 0, right: 10,
+            textStyle: {{ color: '#8b949e', fontSize: 11 }},
+            data: ['策略净值', '上证指数'] }},
+        grid: {{ top: 30, bottom: 40, left: 60, right: 20 }},
         xAxis: {{ type: 'category', data: equityData.dates,
             axisLabel: {{ color: '#8b949e', fontSize: 10 }},
             axisLine: {{ lineStyle: {{ color: '#30363d' }} }} }},
         yAxis: {{ scale: true, position: 'right',
-            axisLabel: {{ color: '#8b949e', fontSize: 10 }},
+            axisLabel: {{ color: '#8b949e', fontSize: 10,
+                formatter: function(v) {{ return (v*100).toFixed(0)+'%' }} }},
             splitLine: {{ lineStyle: {{ color: '#21262d' }} }} }},
         dataZoom: [{{ type: 'inside', start: 0, end: 100 }}],
-        series: [{{
-            name: '策略净值', type: 'line', data: equityData.values,
-            symbol: 'none', smooth: true,
-            lineStyle: {{ color: '#58a6ff', width: 2 }},
-            areaStyle: {{ color: new echarts.graphic.LinearGradient(0,0,0,1,[
-                {{ offset: 0, color: 'rgba(88,166,255,0.25)' }},
-                {{ offset: 1, color: 'rgba(88,166,255,0.02)' }}]) }},
-            markLine: {{ silent: true, symbol: 'none',
-                lineStyle: {{ color: '#6b7280', type: 'dashed', width: 1 }},
-                data: [{{ yAxis: 1.0, label: {{ formatter: '成本线', color: '#8b949e', fontSize: 9 }} }}] }}
-        }}]
+        series: series
     }};
     chart.setOption(option);
     window.addEventListener('resize', function() {{ chart.resize(); }});
@@ -1718,7 +1779,7 @@ def main():
     causal = compute_causal(index_data, margin_data, global_indices, regime_full)
 
     # --- 回测与自进化 ---
-    bt = compute_backtest(heatmap_data, regime_full, regime_no_margin) \
+    bt = compute_backtest(heatmap_data, regime_full, regime_no_margin, index_data) \
         if heatmap_data else None
 
     print("\n" + "=" * 60)
