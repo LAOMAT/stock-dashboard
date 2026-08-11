@@ -342,20 +342,18 @@ def compute_sector_chan(sectors_data):
             continue
         try:
             df = df.sort_values('date').reset_index(drop=True)
-            # 只计算日线+60min+30min三个级别(15min/5min数据量太大)
-            ml = chan_engine.analyze_multi_level(df, levels=['日', '60min', '30min'])
-            daily = ml['日']
-            h60 = ml['60min']
-            m30 = ml['30min']
-            # 各级别K线: 日线=原始K线, 分钟级=与analyze内部一致的模拟日内K线
-            # 展示窗口裁剪(日线近120日/60min近90日/30min近60日), 分析仍用全量数据
-            k_daily = {
-                'dates': pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d').tolist()[-120:],
-                'kline': df[['open', 'close', 'low', 'high']]
-                         .astype(float).round(2).values.tolist()[-120:],
-            }
+            # 展示窗口裁剪后再分析, 保证K线与笔/中枢/买卖点严格对齐
+            df_daily = df.tail(120).reset_index(drop=True)
             sim60 = chan_engine._simulate_intraday(df.tail(90), 4)
             sim30 = chan_engine._simulate_intraday(df.tail(60), 8)
+            daily = chan_engine.analyze(df_daily, min_gap=4)
+            h60 = chan_engine.analyze(sim60, min_gap=3)
+            m30 = chan_engine.analyze(sim30, min_gap=3)
+            k_daily = {
+                'dates': pd.to_datetime(df_daily['date']).dt.strftime('%Y-%m-%d').tolist(),
+                'kline': df_daily[['open', 'close', 'low', 'high']]
+                         .astype(float).round(2).values.tolist(),
+            }
             k_60 = {
                 'dates': sim60['date'].astype(str).tolist(),
                 'kline': sim60[['open', 'close', 'low', 'high']]
