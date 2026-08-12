@@ -515,6 +515,52 @@ def forecast_paths(df, chan_result, horizon=15):
     }
 
 
+def extract_key_levels(chan_result, cur_price, vol_result=None, max_levels=2):
+    """
+    提取当前价附近的关键支撑位/压力位(供推演横幅展示)
+      支撑: 最近中枢下沿ZD(及站上后转化为支撑的上沿ZG)、前低(底分型笔端点)、黄金柱支撑
+      压力: 最近中枢上沿ZG(及跌破后转化为压力的下沿ZD)、前高(顶分型笔端点)、将军柱柱顶
+    Returns:
+        dict: {'support': [...], 'resistance': [...]}, 按距现价由近到远
+    """
+    cur = float(cur_price)
+    sup_cands, res_cands = [], []
+
+    # 最近中枢上下沿: 按相对现价的位置归类
+    zs = chan_result.get('zhongshu') or []
+    if zs:
+        for v in (zs[-1]['zd'], zs[-1]['zg']):
+            (sup_cands if v < cur else res_cands).append(float(v))
+
+    # 近期笔端点: 底分型=前低(支撑), 顶分型=前高(压力)
+    for p in (chan_result.get('bi_points') or [])[-8:]:
+        price, ptype = float(p['price']), p.get('type')
+        if ptype == 'bottom' and price < cur:
+            sup_cands.append(price)
+        elif ptype == 'top' and price > cur:
+            res_cands.append(price)
+
+    # 量柱: 黄金柱支撑区间(取距现价更近的一沿); 将军柱柱顶为压力
+    if vol_result:
+        for g in (vol_result.get('golden') or [])[-3:]:
+            top, bottom = float(g['top']), float(g['bottom'])
+            if bottom < cur:
+                sup_cands.append(top if top < cur else bottom)
+            if g.get('label') == '将军柱' and top > cur:
+                res_cands.append(top)
+
+    def _pick(cands):
+        out = []
+        for v in sorted(set(round(v, 2) for v in cands), key=lambda x: abs(x - cur)):
+            if all(abs(v - u) > cur * 0.003 for u in out):  # 间距<0.3%视为同一点位
+                out.append(v)
+            if len(out) >= max_levels:
+                break
+        return out
+
+    return {'support': _pick(sup_cands), 'resistance': _pick(res_cands)}
+
+
 def _fmt_date(d):
     """日期格式化: 分钟级(带HH:MM)保留时间, 日线只保留年月日"""
     t = pd.Timestamp(d)

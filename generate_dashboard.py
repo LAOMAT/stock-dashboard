@@ -314,6 +314,8 @@ def compute_chan_vol(index_data, index_name="上证指数"):
             print(f"  推演: {fc['basis']}")
             if fc.get('signals'):
                 print(f"  结构信号: {'; '.join(fc['signals'])}")
+            key_lv = chan_engine.extract_key_levels(res, df_lv['close'].iloc[-1], vol)
+            print(f"  关键点位: 支撑{key_lv['support']} 压力{key_lv['resistance']}")
             text = {
                 'index_name': index_name,
                 'chan_state': res['state_text'],
@@ -326,6 +328,7 @@ def compute_chan_vol(index_data, index_name="上证指数"):
                 'forecast_structures': fc.get('structures', {}),
                 'forecast_signals': fc.get('signals', []),
                 'cur_pos': fc.get('cur_pos', ''),
+                'key_levels': key_lv,
             }
 
     return levels, text
@@ -878,12 +881,19 @@ def generate_html(heatmap_data, market_data, idx_charts, idx_texts,
                                 f"{path_label} {fp[path_key]}%</b><ul>{items}</ul></div>")
         sigs = ct.get('forecast_signals', [])
         sig_txt = f" | 信号: {'; '.join(sigs)}" if sigs else ""
+        # 关键点位: 近期支撑位/压力位(中枢ZD/ZG、前低前高、黄金柱/将军柱)
+        kl = ct.get('key_levels') or {}
+        sup_txt = '/'.join(f"{v:.0f}" for v in kl.get('support', [])) or '—'
+        res_txt = '/'.join(f"{v:.0f}" for v in kl.get('resistance', [])) or '—'
+        kl_html = (f"<span class='cb-sep'>|</span><span class='cb-tag'>关键点位</span>"
+                   f"支撑位 <b style='color:#22c55e'>{sup_txt}</b> "
+                   f"压力位 <b style='color:#ef4444'>{res_txt}</b>")
         return f"""
         <div class='chan-banner {div_cls}'>
             <div class='cb-line'><span class='cb-tag'>{name}</span>{ct['chan_state']}
             <span class='cb-sep'>|</span><span class='cb-tag'>量柱</span>{vs['recent_msg']}·{vs['support_txt']}
             <span class='cb-sep'>|</span><span class='cb-tag'>推演</span>
-            <b style='color:#ef4444'>攻{fp['up']}%</b>·<b style='color:#eab308'>荡{fp['range']}%</b>·<b style='color:#22c55e'>探{fp['down']}%</b>{sig_txt}</div>
+            <b style='color:#ef4444'>攻{fp['up']}%</b>·<b style='color:#eab308'>荡{fp['range']}%</b>·<b style='color:#22c55e'>探{fp['down']}%</b>{sig_txt}{kl_html}</div>
             <details class='cb-detail'><summary>结构事件明细与推演依据</summary>
             <div class='cb-sub' style='margin:4px 0'>{ct['forecast_basis']}</div>
             <div class='fc-structures'>{struct_html}</div></details>
