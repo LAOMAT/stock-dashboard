@@ -29,6 +29,13 @@ import volpillar
 import causal_engine
 import backtest
 
+# 多维共振增强版ETF策略(可选依赖, 缺失/异常时自动fallback到经典MRS+生命周期策略)
+try:
+    import enhanced_strategy
+    _HAS_ENHANCED = True
+except Exception:
+    _HAS_ENHANCED = False
+
 OUTPUT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
 
 
@@ -765,8 +772,154 @@ def _etf_strategy_html(latest, market_data, bt):
     <div class='cb-sub' style='margin-bottom:4px'>{wait_txt}</div>"""
 
 
+def _enhanced_etf_strategy_html(latest, market_data, sectors_data=None, bt=None):
+    """增强版行业ETF投资策略: 三层底仓+多因子共振(每日更新)
+
+    设计理念(详见enhanced_strategy.py):
+      正仓(道-战略层): 政策风口+产业链核心+生命周期早段, 中期持有(50-70%)
+      机动仓(法-战术层): 情绪冰点/修复+缠论买点+黄金柱支撑, 波段操作(20-40%)
+      观察仓(术-验证层): 板块异动但多因子未共振, 小仓试探(5-10%)
+    展示: 每层显示板块/评分/仓位/操作信号/依据, 附多因子评分明细与经典策略对比
+    健壮性: 模块缺失/策略内部fallback/任何异常 -> 自动退回经典MRS+生命周期策略
+    """
+    if not latest or not market_data:
+        return ""
+
+    if not _HAS_ENHANCED:
+        return _etf_strategy_html(latest, market_data, bt)  # fallback
+
+    try:
+        # 构建策略参数: 传入板块K线时自动计算缠论买卖点/量柱黄金柱信号
+        params = {
+            'use_enhanced': True,
+            'compute_chan_vol': True,  # 自动计算缠论/量柱
+        }
+
+        # latest补充板块最新收盘价(供缠论中枢位置/量柱支撑判断现价)
+        enriched = {name: dict(v) for name, v in latest.items()}
+        if sectors_data:
+            for name, v in enriched.items():
+                kdf = sectors_data.get(name)
+                if kdf is not None and len(kdf) > 0 and 'close' in kdf.columns:
+                    v['close'] = float(kdf['close'].iloc[-1])
+
+        # 生成增强策略交易计划(单板块异常在策略内部已隔离为空仓计划)
+        strategy = enhanced_strategy.EnhancedETFStrategy(params)
+        plan_result = strategy.generate_trading_plan(enriched, market_data, sectors_data)
+
+        # 策略内部判定fallback(核心引擎缺失) -> 退回经典策略视图
+        if plan_result.get('fallback'):
+            return _etf_strategy_html(latest, market_data, bt)
+
+        # 按层级分组(正仓/机动仓/观察仓)
+        plans = plan_result['plans']
+        zheng_plans = [p for p in plans if p['warehouse_level'] == '正仓']
+        jidong_plans = [p for p in plans if p['warehouse_level'] == '机动仓']
+        guancha_plans = [p for p in plans if p['warehouse_level'] == '观察仓']
+
+        emotion_phase = plan_result['emotion_phase']
+        mrs = plan_result['mrs']
+        total_pos = plan_result['total_position_pct']
+
+        def _plan_row(p):
+            action_cls = {'买入': 'buy', '持有': 'hold', '止盈': 'tp',
+                          '卖出': 'sell', '观望': 'wait'}.get(p['action'], 'wait')
+            risk_cls = {'低': 'low', '中': 'mid', '高': 'high'}.get(p['risk_level'], 'mid')
+            return f"""
+            <div class='plan-row'>
+                <span class='plan-etf'><b>{p['etf'] or p['sector']}</b></span>
+                <span class='plan-score'>{p['total_score']}分</span>
+                <span class='plan-pos'>{p['position_pct']}%</span>
+                <span class='plan-action {action_cls}'>{p['action']}</span>
+                <span class='plan-risk {risk_cls}'>{p['risk_level']}风险</span>
+                <div class='plan-reason'>{p['entry_reason']}</div>
+                <div class='plan-exit'>退出: {p['exit_plan']}</div>
+            </div>"""
+
+        zheng_rows = ''.join(_plan_row(p) for p in zheng_plans)
+        jidong_rows = ''.join(_plan_row(p) for p in jidong_plans)
+        guancha_rows = ''.join(_plan_row(p) for p in guancha_plans)
+
+        # 多因子评分明细行(plans已按总分降序; 仅展示非空仓标的)
+        factor_rows = ""
+        for p in plans:
+            if p['warehouse_level'] == '空仓':
+                continue
+            fs = p['factor_scores']
+            factor_rows += (f"<tr><td><b>{p['sector']}</b></td>"
+                            f"<td>{fs.get('lifecycle', '-')}</td>"
+                            f"<td>{fs.get('mrs', '-')}</td>"
+                            f"<td>{fs.get('emotion_cycle', '-')}</td>"
+                            f"<td>{fs.get('chan_structure', '-')}</td>"
+                            f"<td>{fs.get('volume_pillar', '-')}</td>"
+                            f"<td>{fs.get('policy_industry', '-')}</td>"
+                            f"<td><b>{p['total_score']}</b></td></tr>")
+        if not factor_rows:
+            factor_rows = ("<tr><td colspan='8' style='text-align:center;color:#6b7280'>"
+                           "当前无持仓标的</td></tr>")
+
+        # 经典策略视图(折叠保留, 供与增强策略对比)
+        classic_html = _etf_strategy_html(latest, market_data, bt)
+
+        return f"""
+    <div class='enhanced-strategy'>
+        <div class='strategy-head enhanced'>
+            <span class='strategy-anchor'>
+                情绪周期: <b style='color:#f97316'>{emotion_phase}</b> ·
+                MRS <b>{mrs:.0f}</b> → 建议总仓位 <b style='color:#22c55e'>{total_pos}%</b>
+                <span class='cb-sub'>(三层底仓 · 多因子共振 · 动态仓位)</span>
+            </span>
+        </div>
+        <div class='warehouse-layers'>
+            <div class='layer zheng'>
+                <div class='layer-header'>
+                    <span class='layer-badge zheng'>正仓 · 战略层</span>
+                    <span class='layer-desc'>政策风口+产业链核心 | 中期持有 | 50-70%</span>
+                </div>
+                <div class='layer-body'>
+                    {zheng_rows or '<div class="empty-layer">当前无正仓标的，等待政策风口+高分共振</div>'}
+                </div>
+            </div>
+            <div class='layer jidong'>
+                <div class='layer-header'>
+                    <span class='layer-badge jidong'>机动仓 · 战术层</span>
+                    <span class='layer-desc'>情绪冰点/修复+缠论买点 | 波段操作 | 20-40%</span>
+                </div>
+                <div class='layer-body'>
+                    {jidong_rows or '<div class="empty-layer">当前无机动仓标的，等待情绪冰点或缠论买点</div>'}
+                </div>
+            </div>
+            <div class='layer guancha'>
+                <div class='layer-header'>
+                    <span class='layer-badge guancha'>观察仓 · 验证层</span>
+                    <span class='layer-desc'>板块异动试探 | 超短验证 | 5-10%</span>
+                </div>
+                <div class='layer-body'>
+                    {guancha_rows or '<div class="empty-layer">当前无观察仓标的</div>'}
+                </div>
+            </div>
+        </div>
+        <details class='factor-detail'>
+            <summary>多因子评分明细（点击查看）</summary>
+            <table class='factor-table'>
+                <thead><tr><th>板块</th><th>生命周期</th><th>MRS</th><th>情绪周期</th>
+                <th>缠论结构</th><th>量学</th><th>政策产业</th><th>总分</th></tr></thead>
+                <tbody>{factor_rows}</tbody>
+            </table>
+        </details>
+        <details class='factor-detail classic-view'>
+            <summary>经典策略视图（MRS+生命周期, 点击对比）</summary>
+            {classic_html}
+        </details>
+    </div>"""
+    except Exception as e:
+        # 增强策略任何异常不拖垮看板 -> 自动fallback到经典策略
+        print(f"  增强策略生成失败, 已fallback到经典策略: {e}")
+        return _etf_strategy_html(latest, market_data, bt)
+
+
 def generate_html(heatmap_data, market_data, idx_charts, idx_texts,
-                  sector_chan, causal, bt):
+                  sector_chan, causal, bt, sectors_data=None):
     """生成HTML看板"""
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -907,8 +1060,14 @@ def generate_html(heatmap_data, market_data, idx_charts, idx_texts,
         f'data-index="{n}">{n}</button>'
         for i, n in enumerate(idx_charts))
 
-    strategy_html = _etf_strategy_html(heatmap_data['latest'] if heatmap_data else None,
-                                       market_data, bt)
+    # 尝试使用增强策略(三层底仓+多因子共振), 传入sectors_data用于计算缠论/量柱;
+    # 模块缺失或运行异常时在函数内部自动fallback到经典MRS+生命周期策略
+    if _HAS_ENHANCED:
+        strategy_html = _enhanced_etf_strategy_html(heatmap_data['latest'] if heatmap_data else None,
+                                                    market_data, sectors_data, bt)
+    else:
+        strategy_html = _etf_strategy_html(heatmap_data['latest'] if heatmap_data else None,
+                                           market_data, bt)
     sector_table = _sector_table_html(heatmap_data['latest']) if heatmap_data else ""
     legend = _lifecycle_legend_html()
     backtest_html = _backtest_html(bt)
@@ -1110,6 +1269,44 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
     .chart-mobile-h {{ height: 420px !important; }}
     #equity.chart-mobile-h {{ height: 200px !important; }}
     #heatmap {{ min-width: 900px; }}
+}}
+/* 增强策略三层底仓 */
+.enhanced-strategy .layer {{ margin-bottom: 16px; border: 1px solid #30363d; border-radius: 8px; overflow: hidden; }}
+.layer-header {{ padding: 10px 12px; background: #161b22; display: flex; align-items: center; gap: 12px; }}
+.layer-badge {{ padding: 4px 10px; border-radius: 4px; font-size: 12px; font-weight: 600; }}
+.layer-badge.zheng {{ background: #8b5cf6; color: white; }}
+.layer-badge.jidong {{ background: #f59e0b; color: white; }}
+.layer-badge.guancha {{ background: #3b82f6; color: white; }}
+.layer-desc {{ font-size: 12px; color: #8b949e; }}
+.layer-body {{ padding: 12px; }}
+.plan-row {{ display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid #21262d; flex-wrap: wrap; }}
+.plan-row:last-child {{ border-bottom: none; }}
+.plan-etf {{ min-width: 140px; }}
+.plan-score {{ color: #58a6ff; font-weight: 600; }}
+.plan-pos {{ color: #22c55e; font-weight: 600; }}
+.plan-action {{ padding: 2px 8px; border-radius: 4px; font-size: 11px; }}
+.plan-action.buy {{ background: #dc2626; color: white; }}
+.plan-action.hold {{ background: #16a34a; color: white; }}
+.plan-action.tp {{ background: #eab308; color: black; }}
+.plan-action.sell {{ background: #6b7280; color: white; }}
+.plan-action.wait {{ background: #374151; color: #d1d5db; }}
+.plan-risk {{ font-size: 11px; padding: 2px 6px; border-radius: 3px; }}
+.plan-risk.low {{ background: #166534; color: white; }}
+.plan-risk.mid {{ background: #a16207; color: white; }}
+.plan-risk.high {{ background: #991b1b; color: white; }}
+.plan-reason, .plan-exit {{ width: 100%; font-size: 11px; color: #8b949e; margin-top: 4px; }}
+.empty-layer {{ text-align: center; color: #6b7280; padding: 20px; font-size: 13px; }}
+.factor-detail {{ margin-top: 8px; }}
+.factor-detail summary {{ cursor: pointer; color: #8b949e; font-size: 12px; padding: 6px 0; }}
+.factor-detail summary:hover {{ color: #c9d1d9; }}
+.factor-table {{ width: 100%; font-size: 11px; border-collapse: collapse; }}
+.factor-table th, .factor-table td {{ padding: 6px 8px; text-align: center; border-bottom: 1px solid #21262d; }}
+.factor-table th {{ background: #161b22; color: #8b949e; font-weight: 500; }}
+@media (max-width: 768px) {{
+    .layer-header {{ flex-wrap: wrap; gap: 6px; }}
+    .layer-desc {{ font-size: 11px; }}
+    .plan-etf {{ min-width: 110px; }}
+    .factor-table {{ font-size: 10px; }}
 }}
 </style>
 </head>
@@ -1844,7 +2041,7 @@ def main():
     print("步骤10: 生成HTML看板")
     print("=" * 60)
     html = generate_html(heatmap_data, market_data, idx_charts, idx_texts,
-                         sector_chan, causal, bt)
+                         sector_chan, causal, bt, sectors_data=sectors_data)
 
     with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
         f.write(html)

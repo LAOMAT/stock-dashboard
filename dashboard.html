@@ -161,13 +161,51 @@ body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Microso
     #equity.chart-mobile-h { height: 200px !important; }
     #heatmap { min-width: 900px; }
 }
+/* 增强策略三层底仓 */
+.enhanced-strategy .layer { margin-bottom: 16px; border: 1px solid #30363d; border-radius: 8px; overflow: hidden; }
+.layer-header { padding: 10px 12px; background: #161b22; display: flex; align-items: center; gap: 12px; }
+.layer-badge { padding: 4px 10px; border-radius: 4px; font-size: 12px; font-weight: 600; }
+.layer-badge.zheng { background: #8b5cf6; color: white; }
+.layer-badge.jidong { background: #f59e0b; color: white; }
+.layer-badge.guancha { background: #3b82f6; color: white; }
+.layer-desc { font-size: 12px; color: #8b949e; }
+.layer-body { padding: 12px; }
+.plan-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid #21262d; flex-wrap: wrap; }
+.plan-row:last-child { border-bottom: none; }
+.plan-etf { min-width: 140px; }
+.plan-score { color: #58a6ff; font-weight: 600; }
+.plan-pos { color: #22c55e; font-weight: 600; }
+.plan-action { padding: 2px 8px; border-radius: 4px; font-size: 11px; }
+.plan-action.buy { background: #dc2626; color: white; }
+.plan-action.hold { background: #16a34a; color: white; }
+.plan-action.tp { background: #eab308; color: black; }
+.plan-action.sell { background: #6b7280; color: white; }
+.plan-action.wait { background: #374151; color: #d1d5db; }
+.plan-risk { font-size: 11px; padding: 2px 6px; border-radius: 3px; }
+.plan-risk.low { background: #166534; color: white; }
+.plan-risk.mid { background: #a16207; color: white; }
+.plan-risk.high { background: #991b1b; color: white; }
+.plan-reason, .plan-exit { width: 100%; font-size: 11px; color: #8b949e; margin-top: 4px; }
+.empty-layer { text-align: center; color: #6b7280; padding: 20px; font-size: 13px; }
+.factor-detail { margin-top: 8px; }
+.factor-detail summary { cursor: pointer; color: #8b949e; font-size: 12px; padding: 6px 0; }
+.factor-detail summary:hover { color: #c9d1d9; }
+.factor-table { width: 100%; font-size: 11px; border-collapse: collapse; }
+.factor-table th, .factor-table td { padding: 6px 8px; text-align: center; border-bottom: 1px solid #21262d; }
+.factor-table th { background: #161b22; color: #8b949e; font-weight: 500; }
+@media (max-width: 768px) {
+    .layer-header { flex-wrap: wrap; gap: 6px; }
+    .layer-desc { font-size: 11px; }
+    .plan-etf { min-width: 110px; }
+    .factor-table { font-size: 10px; }
+}
 </style>
 </head>
 <body>
 
 <div class="header">
     <h1>行业ETF轮动量化投资驾驶舱 <span style="font-size:12px;color:#8b949e">缠论·量柱·多周期·MRS·ETF策略</span></h1>
-    <div class="update-time">数据更新时间: 2026-08-16 13:32 · 三大指数截至 <b style='color:#58a6ff'>2026-08-14</b></div>
+    <div class="update-time">数据更新时间: 2026-08-16 14:16 · 三大指数截至 <b style='color:#58a6ff'>2026-08-14</b></div>
 </div>
 
 <div class="instructions">
@@ -258,6 +296,117 @@ body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Microso
         <div id="heatmap" class="chart-mobile-h" style="width: 100%; height: 560px;"></div>
     </div>
     
+    <div class='enhanced-strategy'>
+        <div class='strategy-head enhanced'>
+            <span class='strategy-anchor'>
+                情绪周期: <b style='color:#f97316'>冰点期</b> ·
+                MRS <b>29</b> → 建议总仓位 <b style='color:#22c55e'>43.6%</b>
+                <span class='cb-sub'>(三层底仓 · 多因子共振 · 动态仓位)</span>
+            </span>
+        </div>
+        <div class='warehouse-layers'>
+            <div class='layer zheng'>
+                <div class='layer-header'>
+                    <span class='layer-badge zheng'>正仓 · 战略层</span>
+                    <span class='layer-desc'>政策风口+产业链核心 | 中期持有 | 50-70%</span>
+                </div>
+                <div class='layer-body'>
+                    <div class="empty-layer">当前无正仓标的，等待政策风口+高分共振</div>
+                </div>
+            </div>
+            <div class='layer jidong'>
+                <div class='layer-header'>
+                    <span class='layer-badge jidong'>机动仓 · 战术层</span>
+                    <span class='layer-desc'>情绪冰点/修复+缠论买点 | 波段操作 | 20-40%</span>
+                </div>
+                <div class='layer-body'>
+                    
+            <div class='plan-row'>
+                <span class='plan-etf'><b>516950 基建ETF</b></span>
+                <span class='plan-score'>73分</span>
+                <span class='plan-pos'>8.1%</span>
+                <span class='plan-action buy'>买入</span>
+                <span class='plan-risk mid'>中风险</span>
+                <div class='plan-reason'>启动期+情绪冰点+1买信号</div>
+                <div class='plan-exit'>退出: 情绪高潮或缠论1卖/3卖或跌破黄金柱支撑退出</div>
+            </div>
+            <div class='plan-row'>
+                <span class='plan-etf'><b>159936 可选消费ETF(广发)</b></span>
+                <span class='plan-score'>72分</span>
+                <span class='plan-pos'>8.4%</span>
+                <span class='plan-action buy'>买入</span>
+                <span class='plan-risk mid'>中风险</span>
+                <div class='plan-reason'>发酵期+情绪冰点+1买信号+黄金柱支撑</div>
+                <div class='plan-exit'>退出: 情绪高潮或缠论1卖/3卖或跌破黄金柱支撑退出</div>
+            </div>
+            <div class='plan-row'>
+                <span class='plan-etf'><b>512720 计算机ETF</b></span>
+                <span class='plan-score'>68分</span>
+                <span class='plan-pos'>7.1%</span>
+                <span class='plan-action buy'>买入</span>
+                <span class='plan-risk mid'>中风险</span>
+                <div class='plan-reason'>主升期+情绪冰点+1买信号+政策风口+产业链核心</div>
+                <div class='plan-exit'>退出: 情绪高潮或缠论1卖/3卖或跌破黄金柱支撑退出</div>
+            </div>
+            <div class='plan-row'>
+                <span class='plan-etf'><b>561560 电力ETF</b></span>
+                <span class='plan-score'>57分</span>
+                <span class='plan-pos'>5.0%</span>
+                <span class='plan-action buy'>买入</span>
+                <span class='plan-risk mid'>中风险</span>
+                <div class='plan-reason'>发酵期+情绪冰点+政策风口+产业链核心</div>
+                <div class='plan-exit'>退出: 情绪高潮或缠论1卖/3卖或跌破黄金柱支撑退出</div>
+            </div>
+                </div>
+            </div>
+            <div class='layer guancha'>
+                <div class='layer-header'>
+                    <span class='layer-badge guancha'>观察仓 · 验证层</span>
+                    <span class='layer-desc'>板块异动试探 | 超短验证 | 5-10%</span>
+                </div>
+                <div class='layer-body'>
+                    
+            <div class='plan-row'>
+                <span class='plan-etf'><b>512980 传媒ETF</b></span>
+                <span class='plan-score'>54分</span>
+                <span class='plan-pos'>5.0%</span>
+                <span class='plan-action buy'>买入</span>
+                <span class='plan-risk high'>高风险</span>
+                <div class='plan-reason'>主升期+情绪冰点+政策面支持</div>
+                <div class='plan-exit'>退出: 验证失败立即退出; 验证成功升级为机动仓</div>
+            </div>
+            <div class='plan-row'>
+                <span class='plan-etf'><b>515210 钢铁ETF</b></span>
+                <span class='plan-score'>52分</span>
+                <span class='plan-pos'>5.0%</span>
+                <span class='plan-action buy'>买入</span>
+                <span class='plan-risk high'>高风险</span>
+                <div class='plan-reason'>情绪冰点+3买信号</div>
+                <div class='plan-exit'>退出: 验证失败立即退出; 验证成功升级为机动仓</div>
+            </div>
+            <div class='plan-row'>
+                <span class='plan-etf'><b>159996 家电ETF</b></span>
+                <span class='plan-score'>43分</span>
+                <span class='plan-pos'>5.0%</span>
+                <span class='plan-action buy'>买入</span>
+                <span class='plan-risk high'>高风险</span>
+                <div class='plan-reason'>情绪冰点+政策面支持</div>
+                <div class='plan-exit'>退出: 验证失败立即退出; 验证成功升级为机动仓</div>
+            </div>
+                </div>
+            </div>
+        </div>
+        <details class='factor-detail'>
+            <summary>多因子评分明细（点击查看）</summary>
+            <table class='factor-table'>
+                <thead><tr><th>板块</th><th>生命周期</th><th>MRS</th><th>情绪周期</th>
+                <th>缠论结构</th><th>量学</th><th>政策产业</th><th>总分</th></tr></thead>
+                <tbody><tr><td><b>建筑</b></td><td>25</td><td>2</td><td>20</td><td>20</td><td>6</td><td>0</td><td><b>73</b></td></tr><tr><td><b>纺织</b></td><td>20</td><td>2</td><td>20</td><td>20</td><td>10</td><td>0</td><td><b>72</b></td></tr><tr><td><b>计算机</b></td><td>15</td><td>2</td><td>20</td><td>20</td><td>6</td><td>5</td><td><b>68</b></td></tr><tr><td><b>电力</b></td><td>20</td><td>2</td><td>20</td><td>4</td><td>6</td><td>5</td><td><b>57</b></td></tr><tr><td><b>传媒</b></td><td>15</td><td>2</td><td>20</td><td>8</td><td>6</td><td>3</td><td><b>54</b></td></tr><tr><td><b>钢铁</b></td><td>8</td><td>2</td><td>20</td><td>16</td><td>6</td><td>0</td><td><b>52</b></td></tr><tr><td><b>家电</b></td><td>8</td><td>2</td><td>20</td><td>8</td><td>2</td><td>3</td><td><b>43</b></td></tr></tbody>
+            </table>
+        </details>
+        <details class='factor-detail classic-view'>
+            <summary>经典策略视图（MRS+生命周期, 点击对比）</summary>
+            
     <div class='strategy-head'>
         <span class='strategy-anchor'>总仓位锚点: <b style='color:#f0f6fc'>MRS 29(空仓区)</b>
         → 建议总仓位 <b style='color:#f0f6fc'>0~2成</b>;
@@ -270,6 +419,8 @@ body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Microso
         <tbody><tr><td><span class='op-badge buy'>买入</span></td><td><b>通信ETF(515880)</b></td><td class='pos'>≈3%</td><td class='reason'>启动期: 得分43, Δ+18.0≥5.0, 早期分歧日介入, 跌破启动日低点止损</td></tr><tr><td><span class='op-badge buy'>买入</span></td><td><b>汽车ETF(516110)</b></td><td class='pos'>≈3%</td><td class='reason'>启动期: 得分52, Δ+14.0≥5.0, 早期分歧日介入, 跌破启动日低点止损</td></tr><tr><td><span class='op-badge buy'>买入</span></td><td><b>基建ETF(516950)</b></td><td class='pos'>≈3%</td><td class='reason'>启动期: 得分44, Δ+12.0≥5.0, 早期分歧日介入, 跌破启动日低点止损</td></tr><tr><td><span class='op-badge hold'>持有</span></td><td><b>军工ETF(512660)</b></td><td class='pos'>维持</td><td class='reason'>发酵期: 得分65, Δ+35.0 | 趋势发酵中, 持有为主, 回调至MA20附近可加仓</td></tr><tr><td><span class='op-badge hold'>持有</span></td><td><b>房地产ETF(512200)</b></td><td class='pos'>维持</td><td class='reason'>发酵期: 得分64, Δ+29.0 | 趋势发酵中, 持有为主, 回调至MA20附近可加仓</td></tr><tr><td><span class='op-badge hold'>持有</span></td><td><b>环保ETF(512580)</b></td><td class='pos'>维持</td><td class='reason'>发酵期: 得分65, Δ+23.0 | 趋势发酵中, 持有为主, 回调至MA20附近可加仓</td></tr><tr><td><span class='op-badge hold'>持有</span></td><td><b>电力ETF(561560)</b></td><td class='pos'>维持</td><td class='reason'>发酵期: 得分65, Δ+20.0 | 趋势发酵中, 持有为主, 回调至MA20附近可加仓</td></tr><tr><td><span class='op-badge hold'>持有</span></td><td><b>可选消费ETF(广发)(159936)</b></td><td class='pos'>维持</td><td class='reason'>发酵期: 得分62, Δ+14.0 | 趋势发酵中, 持有为主, 回调至MA20附近可加仓</td></tr><tr><td><span class='op-badge hold'>持有</span></td><td><b>机械ETF(159886)</b></td><td class='pos'>维持</td><td class='reason'>发酵期: 得分55, Δ+11.0 | 趋势发酵中, 持有为主, 回调至MA20附近可加仓</td></tr><tr><td><span class='op-badge hold'>持有</span></td><td><b>化工ETF(159870)</b></td><td class='pos'>维持</td><td class='reason'>发酵期: 得分55, Δ+9.0 | 趋势发酵中, 持有为主, 回调至MA20附近可加仓</td></tr><tr><td><span class='op-badge hold'>持有</span></td><td><b>计算机ETF(512720)</b></td><td class='pos'>维持</td><td class='reason'>主升期: 得分79, Δ+17.0 | 主升浪, 坚定持有, 不提前下车</td></tr><tr><td><span class='op-badge hold'>持有</span></td><td><b>医疗ETF(512170)</b></td><td class='pos'>维持</td><td class='reason'>主升期: 得分78, Δ+5.0 | 主升浪, 坚定持有, 不提前下车</td></tr><tr><td><span class='op-badge hold'>持有</span></td><td><b>传媒ETF(512980)</b></td><td class='pos'>维持</td><td class='reason'>主升期: 得分75, Δ+5.0 | 主升浪, 坚定持有, 不提前下车</td></tr><tr><td><span class='op-badge hold'>持有</span></td><td><b>能源ETF(159930)</b></td><td class='pos'>维持</td><td class='reason'>主升期: 得分72, Δ+5.0 | 主升浪, 坚定持有, 不提前下车</td></tr><tr><td><span class='op-badge tp'>止盈</span></td><td><b>有色金属ETF(512400)</b></td><td class='pos'>减半→清</td><td class='reason'>高潮期: 得分72, Δ-16.0 | 高位动能衰竭(Δ转负), 分批止盈: 先减半, 跌破MA10清仓</td></tr><tr><td><span class='op-badge sell'>卖出</span></td><td><b>旅游ETF(159766)</b></td><td class='pos'>清仓</td><td class='reason'>退潮期: 得分56, Δ-3.0 | 资金退潮, 清仓回避, 不抄底</td></tr><tr><td><span class='op-badge sell'>卖出</span></td><td><b>煤炭ETF(515220)</b></td><td class='pos'>清仓</td><td class='reason'>退潮期: 得分68, Δ-5.0 | 资金退潮, 清仓回避, 不抄底</td></tr><tr><td><span class='op-badge sell'>卖出</span></td><td><b>银行ETF(512800)</b></td><td class='pos'>清仓</td><td class='reason'>退潮期: 得分42, Δ-12.0 | 资金退潮, 清仓回避, 不抄底</td></tr><tr><td><span class='op-badge sell'>卖出</span></td><td><b>食品饮料ETF(515170)</b></td><td class='pos'>清仓</td><td class='reason'>退潮期: 得分64, Δ-13.0 | 资金退潮, 清仓回避, 不抄底</td></tr><tr><td><span class='op-badge sell'>卖出</span></td><td><b>可选消费ETF(华夏)(562580)</b></td><td class='pos'>清仓</td><td class='reason'>退潮期: 得分47, Δ-18.0 | 资金退潮, 清仓回避, 不抄底</td></tr></tbody>
     </table>
     <div class='cb-sub' style='margin-bottom:4px'>冰点期(6个) 板块观望: 震荡期做T不加仓, 冰点期等Δ转正</div>
+        </details>
+    </div>
     <div class="sub-title">板块生命周期全景</div>
     <div class='lc-legend'><span class='lc-item'><i style='background:#f97316'></i>启动期: 买入区(早期分歧日介入)</span><span class='lc-item'><i style='background:#ef4444'></i>发酵期: 持有/回调加仓</span><span class='lc-item'><i style='background:#dc2626'></i>主升期: 坚定持有</span><span class='lc-item'><i style='background:#a855f7'></i>高潮期: 禁止追高,分批止盈</span><span class='lc-item'><i style='background:#3b82f6'></i>退潮期: 卖出/回避</span><span class='lc-item'><i style='background:#eab308'></i>震荡期: 做T降成本,不加仓</span><span class='lc-item'><i style='background:#22c55e'></i>冰点期: 观望,等Δ转正再介入</span></div>
     <table class='sec-table'><thead><tr><th style='width:120px'>生命周期</th><th>板块 (得分/5日变化) + 对应ETF</th></tr></thead><tbody><tr><td><span class='stage-badge' style='background:#f97316'>启动期</span><div class='stage-action'>买入区(早期分歧日介入)</div></td><td><div class='sec-chips'><div class='sec-chip'><b>汽车</b> 52↑ <span class='etf'>汽车ETF 516110</span></div><div class='sec-chip'><b>轻工</b> 48↑ <span class='etf'>家居家电ETF 512430</span></div><div class='sec-chip'><b>建材</b> 46↑ <span class='etf'>建材ETF 159745</span></div><div class='sec-chip'><b>建筑</b> 44↑ <span class='etf'>基建ETF 516950</span></div><div class='sec-chip'><b>通信</b> 43↑ <span class='etf'>通信ETF 515880</span></div></div></td></tr><tr><td><span class='stage-badge' style='background:#ef4444'>发酵期</span><div class='stage-action'>持有/回调加仓</div></td><td><div class='sec-chips'><div class='sec-chip'><b>电力</b> 65↑ <span class='etf'>电力ETF 561560</span></div><div class='sec-chip'><b>军工</b> 65↑ <span class='etf'>军工ETF 512660</span></div><div class='sec-chip'><b>环保</b> 65↑ <span class='etf'>环保ETF 512580</span></div><div class='sec-chip'><b>房地产</b> 64↑ <span class='etf'>房地产ETF 512200</span></div><div class='sec-chip'><b>纺织</b> 62↑ <span class='etf'>可选消费ETF(广发) 159936</span></div><div class='sec-chip'><b>机械</b> 55↑ <span class='etf'>机械ETF 159886</span></div><div class='sec-chip'><b>化工</b> 55↑ <span class='etf'>化工ETF 159870</span></div></div></td></tr><tr><td><span class='stage-badge' style='background:#dc2626'>主升期</span><div class='stage-action'>坚定持有</div></td><td><div class='sec-chips'><div class='sec-chip'><b>计算机</b> 79↑ <span class='etf'>计算机ETF 512720</span></div><div class='sec-chip'><b>医药</b> 78↑ <span class='etf'>医疗ETF 512170</span></div><div class='sec-chip'><b>传媒</b> 75↑ <span class='etf'>传媒ETF 512980</span></div><div class='sec-chip'><b>石油</b> 72↑ <span class='etf'>能源ETF 159930</span></div></div></td></tr><tr><td><span class='stage-badge' style='background:#a855f7'>高潮期</span><div class='stage-action'>禁止追高,分批止盈</div></td><td><div class='sec-chips'><div class='sec-chip'><b>有色</b> 72↓ <span class='etf'>有色金属ETF 512400</span></div></div></td></tr><tr><td><span class='stage-badge' style='background:#3b82f6'>退潮期</span><div class='stage-action'>卖出/回避</div></td><td><div class='sec-chips'><div class='sec-chip'><b>煤炭</b> 68↓ <span class='etf'>煤炭ETF 515220</span></div><div class='sec-chip'><b>食品</b> 64↓ <span class='etf'>食品饮料ETF 515170</span></div><div class='sec-chip'><b>社服</b> 56↓ <span class='etf'>旅游ETF 159766</span></div><div class='sec-chip'><b>商贸</b> 47↓ <span class='etf'>可选消费ETF(华夏) 562580</span></div><div class='sec-chip'><b>银行</b> 42↓ <span class='etf'>银行ETF 512800</span></div></div></td></tr><tr><td><span class='stage-badge' style='background:#22c55e'>冰点期</span><div class='stage-action'>观望,等Δ转正再介入</div></td><td><div class='sec-chips'><div class='sec-chip'><b>钢铁</b> 31↓ <span class='etf'>钢铁ETF 515210</span></div><div class='sec-chip'><b>公用</b> 28↓ <span class='etf'>电力ETF(公用事业) 159611</span></div><div class='sec-chip'><b>交通</b> 27↓ <span class='etf'>交通运输ETF 159666</span></div><div class='sec-chip'><b>美容</b> 25↓ <span class='etf'>消费50ETF 515650</span></div><div class='sec-chip'><b>家电</b> 23↓ <span class='etf'>家电ETF 159996</span></div><div class='sec-chip'><b>非银</b> 22↓ <span class='etf'>证券ETF 512880</span></div></div></td></tr></tbody></table>
@@ -298,7 +449,7 @@ body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Microso
             <table class="mini-table"><thead><tr><th>类型</th><th>板块</th><th>日期</th><th>买价</th><th>卖价</th><th>收益</th><th>说明</th></tr></thead>
             <tr><td><span style='color:#ef4444;font-weight:600'>买入</span></td><td>建筑</td><td>2026-08-05</td><td>1947.2</td><td>-</td><td>-</td><td style='color:#8b949e'>启动期建仓</td></tr><tr><td><span style='color:#ef4444;font-weight:600'>买入</span></td><td>军工</td><td>2026-08-05</td><td>1646.56</td><td>-</td><td>-</td><td style='color:#8b949e'>启动期建仓</td></tr><tr><td><span style='color:#ef4444;font-weight:600'>买入</span></td><td>机械</td><td>2026-08-05</td><td>2192.49</td><td>-</td><td>-</td><td style='color:#8b949e'>启动期建仓</td></tr><tr><td><span style='color:#22c55e;font-weight:600'>卖出</span></td><td>食品</td><td>2026-04-24→2026-07-22</td><td>15803.31</td><td>13990.39</td><td style='color:#22c55e'>-11.47%</td><td style='color:#8b949e'>全部卖出·退潮止损</td></tr><tr><td><span style='color:#22c55e;font-weight:600'>卖出</span></td><td>传媒</td><td>2026-05-29→2026-07-17</td><td>738.98</td><td>643.12</td><td style='color:#22c55e'>-12.97%</td><td style='color:#8b949e'>全部卖出·退潮止损</td></tr><tr><td><span style='color:#22c55e;font-weight:600'>卖出</span></td><td>建筑</td><td>2026-06-23→2026-07-06</td><td>2070.23</td><td>2030.93</td><td style='color:#22c55e'>-1.9%</td><td style='color:#8b949e'>全部卖出·退潮止损</td></tr><tr><td><span style='color:#ef4444;font-weight:600'>买入</span></td><td>建筑</td><td>2026-06-23</td><td>2070.23</td><td>-</td><td>-</td><td style='color:#8b949e'>启动期建仓</td></tr><tr><td><span style='color:#22c55e;font-weight:600'>卖出</span></td><td>有色</td><td>2026-05-28→2026-06-23</td><td>8919.45</td><td>8834.29</td><td style='color:#22c55e'>-0.95%</td><td style='color:#8b949e'>全部卖出·退潮止损</td></tr><tr><td><span style='color:#ef4444;font-weight:600'>买入</span></td><td>传媒</td><td>2026-05-29</td><td>738.98</td><td>-</td><td>-</td><td style='color:#8b949e'>启动期建仓</td></tr><tr><td><span style='color:#22c55e;font-weight:600'>卖出</span></td><td>机械</td><td>2026-04-08→2026-05-29</td><td>2257.75</td><td>2472.95</td><td style='color:#ef4444'>+9.53%</td><td style='color:#8b949e'>全部卖出·退潮止损</td></tr><tr><td><span style='color:#ef4444;font-weight:600'>买入</span></td><td>有色</td><td>2026-05-28</td><td>8919.45</td><td>-</td><td>-</td><td style='color:#8b949e'>启动期建仓</td></tr><tr><td><span style='color:#22c55e;font-weight:600'>卖出</span></td><td>煤炭</td><td>2026-05-21→2026-05-28</td><td>3100.46</td><td>3217.65</td><td style='color:#ef4444'>+3.78%</td><td style='color:#8b949e'>全部卖出·退潮止损</td></tr><tr><td><span style='color:#ef4444;font-weight:600'>买入</span></td><td>煤炭</td><td>2026-05-21</td><td>3100.46</td><td>-</td><td>-</td><td style='color:#8b949e'>启动期建仓</td></tr><tr><td><span style='color:#22c55e;font-weight:600'>卖出</span></td><td>公用</td><td>2026-04-21→2026-05-21</td><td>2663.62</td><td>2680.34</td><td style='color:#ef4444'>+0.63%</td><td style='color:#8b949e'>全部卖出·退潮止损</td></tr><tr><td><span style='color:#ef4444;font-weight:600'>买入</span></td><td>食品</td><td>2026-04-24</td><td>15803.31</td><td>-</td><td>-</td><td style='color:#8b949e'>启动期建仓</td></tr></table>
             <div class="causal-h" style="margin-top:12px">进化日志(参数持久化, 过拟合防护)</div>
-            <ul class="log-list"><li>参数更新: {'buy_delta': 8.0, 'exit_climax': False, 'max_sectors': 3} → {'buy_delta': 5.0, 'exit_climax': False, 'max_sectors': 3} (样本外3.7%→3.7%)</li></ul></div>
+            <ul class="log-list"><li>参数更新: {'buy_delta': 5.0, 'exit_climax': False, 'max_sectors': 3} → {'buy_delta': 5.0, 'exit_climax': False, 'max_sectors': 3} (样本外3.7%→3.7%)</li></ul></div>
     </div>
 </div>
 
