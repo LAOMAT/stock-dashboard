@@ -953,7 +953,7 @@ def generate_html(heatmap_data, market_data, idx_charts, idx_texts,
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>大盘与行业走势分析看板</title>
+<title>行业ETF轮动量化投资驾驶舱</title>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <style>
 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
@@ -1116,7 +1116,7 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
 <body>
 
 <div class="header">
-    <h1>大盘与行业走势分析看板 <span style="font-size:12px;color:#8b949e">缠论·量柱·多周期·MRS·ETF策略</span></h1>
+    <h1>行业ETF轮动量化投资驾驶舱 <span style="font-size:12px;color:#8b949e">缠论·量柱·多周期·MRS·ETF策略</span></h1>
     <div class="update-time">数据更新时间: {now_str}{" · " + date_note if date_note else ""}</div>
 </div>
 
