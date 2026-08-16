@@ -321,6 +321,44 @@ DEFAULT_POLICY_DB = {
 }
 
 
+# 细分赛道政策库: 赛道名 -> (政策热度0-3, 产业链地位0-2, 主题备注)
+SUB_SECTOR_POLICY_DB = {
+    '创新药':   (3, 2, '创新药出海+商保目录扩容'),
+    '生物医药': (2, 1, '生物医药产业政策'),
+    '医疗器械': (2, 1, '国产替代+设备更新'),
+    '半导体':   (3, 2, '自主可控+大基金三期'),
+    '科创芯片': (3, 2, '硬科技+国产替代'),
+    '人工智能': (3, 2, 'AI+行动/国产算力'),
+    '云计算':   (2, 1, '数字经济基础设施'),
+    '软件信创': (2, 1, '信创替代+数据要素'),
+    '5G通信':   (2, 1, '5G应用+算力网络'),
+    '游戏':     (1, 1, '版号常态化+AIGC应用'),
+    '机器人':   (2, 1, '智能制造+人形机器人'),
+    '新能源车': (2, 1, '以旧换新+智能驾驶'),
+    '光伏':     (2, 1, '反内卷供给侧改革'),
+    '电池':     (2, 1, '固态电池+储能'),
+    '券商':     (2, 1, '资本市场改革+并购重组'),
+    '军工龙头': (3, 1, '国防现代化, 订单驱动'),
+    '白酒':     (1, 1, '消费提振+高端白酒'),
+    '黄金股':   (1, 2, '避险资产+资源卡位'),
+}
+
+# 细分赛道策略参数预设(单只仓位更小, 信号更敏感)
+SUB_SECTOR_PARAMS = {
+    'zheng_band': (0.10, 0.15),      # 正仓10-15%
+    'jidong_band': (0.06, 0.10),     # 机动仓6-10%
+    'guancha_band': (0.03, 0.05),    # 观察仓3-5%
+    'max_total_position': 0.40,      # 细分池总仓位上限40%
+    'recent_days': 7,                # 缠论窗口10→7天(更敏感)
+    'anomaly_delta': 6.0,            # 异动阈值8→6
+    'score_weights': {               # 评分权重: 情绪周期×1.2, 缠论×1.2, MRS×0.8, 政策×0.8
+        'lifecycle': 1.0, 'mrs': 0.8, 'emotion_cycle': 1.2,
+        'chan_structure': 1.2, 'volume_pillar': 1.0, 'policy_industry': 0.8,
+    },
+    'policy_db': SUB_SECTOR_POLICY_DB,
+}
+
+
 class PolicyIndustryAnalyzer:
     """政策热度 + 产业链地位评分(合计映射到0-5因子分)"""
 
@@ -476,8 +514,8 @@ class EnhancedETFStrategy:
             vol_m = {'signal': '普通', 'broke_support': False, 'detail': 'fallback模式'}
             policy_score = 3
 
-        # --- 多因子共振评分 ---
-        factor_scores = {
+        # --- 多因子共振评分(支持score_weights加权) ---
+        raw_scores = {
             'lifecycle': self._score_lifecycle(stage),
             'mrs': self._score_mrs(mrs),
             'emotion_cycle': self.emotion.get_phase_score(emotion_phase),
@@ -485,7 +523,17 @@ class EnhancedETFStrategy:
             'volume_pillar': self._score_vol(vol_m) if self.enhanced else 6,
             'policy_industry': policy_score if self.enhanced else 3,
         }
-        total_score = int(sum(factor_scores.values()))
+        weights = self.params.get('score_weights')
+        if weights:
+            # 加权归一: total = Σ(wᵢ×sᵢ) / Σ(wᵢ×maxᵢ) × 100
+            max_scores = {'lifecycle': 25, 'mrs': 20, 'emotion_cycle': 20,
+                          'chan_structure': 20, 'volume_pillar': 10, 'policy_industry': 5}
+            weighted_sum = sum(raw_scores[k] * weights.get(k, 1.0) for k in raw_scores)
+            weighted_max = sum(max_scores[k] * weights.get(k, 1.0) for k in max_scores)
+            total_score = int(round(weighted_sum / weighted_max * 100, 0))
+        else:
+            total_score = int(sum(raw_scores.values()))
+        factor_scores = raw_scores
 
         signals = {
             'stage': stage, 'emotion_phase': emotion_phase,
@@ -542,11 +590,21 @@ class EnhancedETFStrategy:
 
     @staticmethod
     def _etf_label(sector_name):
-        """板块 -> '代码 名称'(data_fetcher可用时精确, 否则空)"""
+        """板块/赛道 -> '代码 名称'(data_fetcher可用时精确, 否则空)
+
+        先查宽行业SECTOR_ETF_MAP, 未命中再查细分SUB_SECTOR_ETF_MAP
+        """
         try:
             import data_fetcher
+            # 先查宽行业
             code, name = data_fetcher.SECTOR_ETF_MAP.get(sector_name, ("", ""))
-            return f"{code} {name}".strip()
+            if code:
+                return f"{code} {name}".strip()
+            # 再查细分赛道
+            sub = data_fetcher.SUB_SECTOR_ETF_MAP.get(sector_name)
+            if sub:
+                return f"{sub[0]} {sub[1]}".strip()
+            return ""
         except Exception:
             return ""
 
@@ -743,6 +801,82 @@ class EnhancedETFStrategy:
 
 
 # ======================================================================
+# 细分赛道专用: 宽行业闸门函数
+# ======================================================================
+def apply_wide_gate(sub_plans, wide_plans):
+    """
+    细分赛道信号受宽行业闸门调节
+
+    规则:
+      1. 父行业为"空仓/卖出"信号 -> 细分买入降级为观察仓, 仓位×0.5, 标注"父行业退潮压制"
+      2. 父行业为"正仓/机动仓持有" -> 细分正常生效, 标注"与宽行业共振"
+      3. 父行业正仓+细分也买入 -> 标注"主线共振↑", 看板高亮
+      4. 父行业为"—"(光伏/电池等无宽行业) -> 不设闸门, 只受MRS+情绪约束
+
+    Args:
+        sub_plans: 细分赛道交易计划列表(EnhancedETFStrategy.generate_trading_plan输出['plans'])
+        wide_plans: 宽行业交易计划列表(同上)
+
+    Returns:
+        list: 处理后的sub_plans(添加gate_status/gate_note字段)
+    """
+    # 构建宽行业映射: {板块名: plan}
+    wide_map = {p['sector']: p for p in wide_plans}
+
+    for p in sub_plans:
+        sector = p['sector']
+        # 从data_fetcher获取父行业
+        try:
+            import data_fetcher
+            wide_sector = data_fetcher.SUB_SECTOR_ETF_MAP.get(sector, ('', '', '—', ''))[2]
+        except Exception:
+            wide_sector = '—'
+
+        p['wide_sector'] = wide_sector
+
+        # 无宽行业 -> 独立运行
+        if wide_sector == '—':
+            p['gate_status'] = 'independent'
+            p['gate_note'] = '独立赛道(无宽行业)'
+            continue
+
+        wide_plan = wide_map.get(wide_sector)
+        if wide_plan is None:
+            p['gate_status'] = 'no_parent'
+            p['gate_note'] = f'父行业[{wide_sector}]未评估'
+            continue
+
+        wide_action = wide_plan['action']
+        wide_level = wide_plan['warehouse_level']
+
+        # 规则1: 父行业空仓/卖出 -> 压制
+        if wide_level == '空仓' or wide_action in ('卖出', '观望'):
+            if p['action'] == '买入':
+                p['action'] = '观望'
+                p['position_pct'] = round(p['position_pct'] * 0.5, 1)
+                p['gate_status'] = 'suppressed'
+                p['gate_note'] = f'父行业[{wide_sector}]退潮压制, 买入降级'
+            else:
+                p['gate_status'] = 'suppressed'
+                p['gate_note'] = f'父行业[{wide_sector}]退潮, 同步回避'
+
+        # 规则2/3: 父行业持有/买入 -> 共振
+        elif wide_action in ('买入', '持有', '止盈'):
+            if p['action'] == '买入' and wide_action == '买入':
+                p['gate_status'] = 'resonance_up'
+                p['gate_note'] = f'主线共振↑: 父行业[{wide_sector}]同步买入'
+            else:
+                p['gate_status'] = 'resonance'
+                p['gate_note'] = f'与宽行业[{wide_sector}]共振'
+
+        else:
+            p['gate_status'] = 'neutral'
+            p['gate_note'] = f'父行业[{wide_sector}]中性'
+
+    return sub_plans
+
+
+# ======================================================================
 # 与 generate_dashboard.py 集成的入口
 # ======================================================================
 def generate_plan_from_dashboard(heatmap_data, market_data, sectors_data=None, params=None):
@@ -761,6 +895,50 @@ def generate_plan_from_dashboard(heatmap_data, market_data, sectors_data=None, p
     st = EnhancedETFStrategy(params)
     return st.generate_trading_plan(heatmap_data['scored'], market_data,
                                     sectors_kline=sectors_data)
+
+
+def generate_sub_sector_plan(sub_heatmap_data, market_data, sub_sectors_data=None,
+                             wide_plans=None, params=None):
+    """
+    生成细分赛道交易计划(带宽行业闸门)
+
+    Args:
+        sub_heatmap_data: 细分赛道compute_sector_heatmap()输出
+        market_data:      compute_market_trend()输出
+        sub_sectors_data: data_fetcher.get_sub_sector_data()原始K线(可选)
+        wide_plans:       宽行业交易计划列表(用于闸门调节, 可选)
+        params:           策略参数覆盖(默认用SUB_SECTOR_PARAMS)
+
+    Returns:
+        dict: plans(带gate_status)/emotion_phase/mrs/total_position_pct/fallback
+    """
+    if not sub_heatmap_data or 'scored' not in sub_heatmap_data:
+        return {'plans': [], 'emotion_phase': '分歧期', 'mrs': 50.0,
+                'total_position_pct': 0.0, 'fallback': True,
+                'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M')}
+
+    # 使用细分赛道专用参数
+    sub_params = dict(SUB_SECTOR_PARAMS)
+    if params:
+        sub_params.update(params)
+
+    st = EnhancedETFStrategy(sub_params)
+    result = st.generate_trading_plan(sub_heatmap_data['scored'], market_data,
+                                      sectors_kline=sub_sectors_data)
+
+    # 应用宽行业闸门
+    if wide_plans and not result.get('fallback'):
+        result['plans'] = apply_wide_gate(result['plans'], wide_plans)
+        # 闸门可能改变了仓位, 重新归一
+        cap = st.params['max_total_position'] * 100
+        total = sum(p['position_pct'] for p in result['plans'])
+        if total > cap and total > 0:
+            scale = cap / total
+            for p in result['plans']:
+                p['position_pct'] = round(p['position_pct'] * scale, 1)
+        result['total_position_pct'] = round(sum(p['position_pct'] for p in result['plans']), 1)
+
+    return result
 
 
 # ======================================================================

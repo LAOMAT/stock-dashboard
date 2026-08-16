@@ -92,7 +92,12 @@ def fetch_all_data():
     if len(kcb_data) > 0:
         print(f"  获取成功: {len(kcb_data)}条, 最新日期={kcb_data.iloc[-1]['date'].strftime('%Y-%m-%d')}")
 
-    return sectors_data, index_data, margin_data, global_indices, cyb_data, kcb_data
+    print("\n" + "=" * 60)
+    print("步骤1b: 获取细分赛道ETF数据")
+    print("=" * 60)
+    sub_sectors_data = data_fetcher.get_sub_sector_data(days=150)
+
+    return sectors_data, index_data, margin_data, global_indices, cyb_data, kcb_data, sub_sectors_data
 
 
 def compute_sector_heatmap(sectors_data, num_days=18):
@@ -164,6 +169,80 @@ def compute_sector_heatmap(sectors_data, num_days=18):
         'breadth': breadth_by_date,
         'breadth_full': breadth_full,
         'scored': scored,          # 回测引擎用(含close), 不序列化
+    }
+
+
+def compute_sub_sector_heatmap(sub_sectors_data, num_days=18):
+    """
+    计算细分赛道横截面趋势得分(独立于宽行业池)
+
+    Returns:
+        dict: sectors/dates/scores/latest/scored(与宽行业heatmap结构一致)
+    """
+    print("\n" + "=" * 60)
+    print("步骤5b: 计算细分赛道横截面趋势得分")
+    print("=" * 60)
+
+    if not sub_sectors_data:
+        print("  无细分赛道数据, 跳过")
+        return None
+
+    sectors = [s for s in data_fetcher.SUB_SECTOR_ORDER if s in sub_sectors_data]
+    if not sectors:
+        print("  无有效细分赛道, 跳过")
+        return None
+
+    # 复用trend_engine评分管线(在细分池内部做横截面排名)
+    metrics = {name: trend_engine.calc_sector_raw_metrics(sub_sectors_data[name])
+               for name in sectors}
+    scored = trend_engine.build_cross_sectional_scores(metrics)
+
+    # 对齐日期
+    all_dates = None
+    for name in sectors:
+        dates = set(scored[name]['date'].dt.strftime('%Y-%m-%d').tolist())
+        all_dates = dates if all_dates is None else (all_dates & dates)
+    if not all_dates:
+        print("  错误: 细分赛道没有共有的交易日数据")
+        return None
+    sorted_dates = sorted(all_dates)[-num_days:]
+
+    # 组装热力图
+    scores_data, latest, breadth_by_date = [], {}, {}
+    for s_idx, name in enumerate(sectors):
+        g = scored[name].copy()
+        g['date_str'] = g['date'].dt.strftime('%Y-%m-%d')
+        g = g.set_index('date_str')
+        for d_idx, ds in enumerate(sorted_dates):
+            if ds in g.index:
+                row = g.loc[ds]
+                score = int(row['score'])
+                delta = round(float(row['delta5']), 1) if pd.notna(row['delta5']) else 0.0
+                scores_data.append([s_idx, d_idx, score, delta])
+                breadth_by_date[ds] = breadth_by_date.get(ds, 0) + (1 if score > 50 else 0)
+                if d_idx == len(sorted_dates) - 1:
+                    stage = trend_engine.calc_lifecycle(score, delta)
+                    etf_info = data_fetcher.SUB_SECTOR_ETF_MAP.get(name, ("", "", "—", ""))
+                    latest[name] = {"score": score, "delta": delta, "stage": stage,
+                                    "etf_code": etf_info[0], "etf_name": etf_info[1],
+                                    "wide_sector": etf_info[2], "category": etf_info[3]}
+            else:
+                scores_data.append([s_idx, d_idx, 0, 0])
+
+    n = len(sectors)
+    breadth_by_date = {d: round(v / n * 100, 1) for d, v in breadth_by_date.items()}
+
+    print(f"  计算完成: {n}个细分赛道 × {len(sorted_dates)}个交易日")
+    strong = [k for k, v in latest.items() if v['stage'] in ('启动期', '发酵期', '主升期')]
+    print(f"  当前强势阶段赛道: {', '.join(strong) if strong else '无'}")
+
+    return {
+        'sectors': sectors,
+        'dates': sorted_dates,
+        'scores': scores_data,
+        'latest': latest,
+        'breadth': breadth_by_date,
+        'scored': scored,
     }
 
 
@@ -918,8 +997,147 @@ def _enhanced_etf_strategy_html(latest, market_data, sectors_data=None, bt=None)
         return _etf_strategy_html(latest, market_data, bt)
 
 
+def _sub_sector_strategy_html(sub_heatmap_data, market_data, wide_plans=None, sub_sectors_data=None):
+    """细分赛道ETF策略展示: 独立仓位池≤40%, 受宽行业闸门调节"""
+    if not sub_heatmap_data or not market_data:
+        return ""
+
+    if not _HAS_ENHANCED:
+        return ""  # 无增强策略模块时不展示细分赛道
+
+    try:
+        # 生成细分赛道交易计划(使用细分专用参数)
+        plan_result = enhanced_strategy.generate_sub_sector_plan(
+            sub_heatmap_data, market_data,
+            sub_sectors_data=sub_sectors_data,
+            wide_plans=wide_plans)
+
+        if plan_result.get('fallback'):
+            return ""
+
+        plans = plan_result['plans']
+        if not plans:
+            return ""
+
+        emotion_phase = plan_result['emotion_phase']
+        mrs = plan_result['mrs']
+        total_pos = plan_result['total_position_pct']
+
+        # 按层级分组
+        zheng_plans = [p for p in plans if p['warehouse_level'] == '正仓']
+        jidong_plans = [p for p in plans if p['warehouse_level'] == '机动仓']
+        guancha_plans = [p for p in plans if p['warehouse_level'] == '观察仓']
+
+        # 统计闸门状态
+        gate_counts = {'resonance_up': 0, 'resonance': 0, 'suppressed': 0, 'independent': 0}
+        for p in plans:
+            gs = p.get('gate_status', 'independent')
+            gate_counts[gs] = gate_counts.get(gs, 0) + 1
+        gate_txt = f"共振{gate_counts.get('resonance', 0)+gate_counts.get('resonance_up', 0)} · 压制{gate_counts.get('suppressed', 0)} · 独立{gate_counts.get('independent', 0)}"
+
+        def _plan_row(p):
+            action_cls = {'买入': 'buy', '持有': 'hold', '止盈': 'tp', '卖出': 'sell', '观望': 'wait'}[p['action']]
+            risk_cls = {'低': 'low', '中': 'mid', '高': 'high'}[p['risk_level']]
+            gate = p.get('gate_status', '')
+            gate_badge = ''
+            if gate == 'resonance_up':
+                gate_badge = "<span class='gate-badge up'>共振↑</span>"
+            elif gate == 'resonance':
+                gate_badge = "<span class='gate-badge'>共振</span>"
+            elif gate == 'suppressed':
+                gate_badge = "<span class='gate-badge down'>压制↓</span>"
+            elif gate == 'independent':
+                gate_badge = "<span class='gate-badge ind'>独立</span>"
+            wide = p.get('wide_sector', '—')
+            wide_txt = f"<span class='wide-tag'>{wide}</span>" if wide != '—' else ''
+            return f"""
+            <div class='plan-row'>
+                <span class='plan-etf'><b>{p['etf']}</b>{wide_txt}{gate_badge}</span>
+                <span class='plan-score'>{p['total_score']}分</span>
+                <span class='plan-pos'>{p['position_pct']}%</span>
+                <span class='plan-action {action_cls}'>{p['action']}</span>
+                <span class='plan-risk {risk_cls}'>{p['risk_level']}风险</span>
+                <div class='plan-reason'>{p['entry_reason']}</div>
+                <div class='plan-exit'>退出: {p['exit_plan']}</div>
+            </div>"""
+
+        zheng_rows = ''.join(_plan_row(p) for p in zheng_plans)
+        jidong_rows = ''.join(_plan_row(p) for p in jidong_plans)
+        guancha_rows = ''.join(_plan_row(p) for p in guancha_plans)
+
+        # 多因子评分明细
+        factor_rows = ""
+        for p in plans:
+            if p['warehouse_level'] == '空仓':
+                continue
+            fs = p['factor_scores']
+            factor_rows += (f"<tr><td><b>{p['sector']}</b></td>"
+                            f"<td>{fs.get('lifecycle', '-')}</td>"
+                            f"<td>{fs.get('mrs', '-')}</td>"
+                            f"<td>{fs.get('emotion_cycle', '-')}</td>"
+                            f"<td>{fs.get('chan_structure', '-')}</td>"
+                            f"<td>{fs.get('volume_pillar', '-')}</td>"
+                            f"<td>{fs.get('policy_industry', '-')}</td>"
+                            f"<td><b>{p['total_score']}</b></td></tr>")
+        if not factor_rows:
+            factor_rows = ("<tr><td colspan='8' style='text-align:center;color:#6b7280'>"
+                           "当前无持仓赛道</td></tr>")
+
+        return f"""
+    <div class='enhanced-strategy sub-sector'>
+        <div class='strategy-head enhanced'>
+            <span class='strategy-anchor'>
+                情绪周期: <b style='color:#f97316'>{emotion_phase}</b> ·
+                MRS <b>{mrs:.0f}</b> → 细分池建议总仓位 <b style='color:#22c55e'>{total_pos}%</b>
+                <span class='cb-sub'>(独立仓位池≤40% · 高弹性 · 宽行业闸门调节: {gate_txt})</span>
+            </span>
+        </div>
+        <div class='warehouse-layers'>
+            <div class='layer zheng'>
+                <div class='layer-header'>
+                    <span class='layer-badge zheng'>正仓 · 战略层</span>
+                    <span class='layer-desc'>主线赛道 | 中期持有 | 10-15%</span>
+                </div>
+                <div class='layer-body'>
+                    {zheng_rows or '<div class="empty-layer">当前无正仓赛道</div>'}
+                </div>
+            </div>
+            <div class='layer jidong'>
+                <div class='layer-header'>
+                    <span class='layer-badge jidong'>机动仓 · 战术层</span>
+                    <span class='layer-desc'>冰点/缠论买点 | 波段操作 | 6-10%</span>
+                </div>
+                <div class='layer-body'>
+                    {jidong_rows or '<div class="empty-layer">当前无机动仓赛道</div>'}
+                </div>
+            </div>
+            <div class='layer guancha'>
+                <div class='layer-header'>
+                    <span class='layer-badge guancha'>观察仓 · 验证层</span>
+                    <span class='layer-desc'>赛道异动试探 | 超短验证 | 3-5%</span>
+                </div>
+                <div class='layer-body'>
+                    {guancha_rows or '<div class="empty-layer">当前无观察仓赛道</div>'}
+                </div>
+            </div>
+        </div>
+        <details class='factor-detail'>
+            <summary>细分赛道多因子评分明细（点击查看）</summary>
+            <table class='factor-table'>
+                <thead><tr><th>赛道</th><th>生命周期</th><th>MRS</th><th>情绪周期</th>
+                <th>缠论结构</th><th>量学</th><th>政策产业</th><th>总分</th></tr></thead>
+                <tbody>{factor_rows}</tbody>
+            </table>
+        </details>
+    </div>"""
+    except Exception as e:
+        print(f"  细分赛道策略生成失败: {e}")
+        return ""
+
+
 def generate_html(heatmap_data, market_data, idx_charts, idx_texts,
-                  sector_chan, causal, bt, sectors_data=None):
+                  sector_chan, causal, bt, sectors_data=None,
+                  sub_heatmap_data=None, sub_sectors_data=None):
     """生成HTML看板"""
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -1062,12 +1280,28 @@ def generate_html(heatmap_data, market_data, idx_charts, idx_texts,
 
     # 尝试使用增强策略(三层底仓+多因子共振), 传入sectors_data用于计算缠论/量柱;
     # 模块缺失或运行异常时在函数内部自动fallback到经典MRS+生命周期策略
+    wide_plans = []
     if _HAS_ENHANCED:
         strategy_html = _enhanced_etf_strategy_html(heatmap_data['latest'] if heatmap_data else None,
                                                     market_data, sectors_data, bt)
+        # 提取宽行业plans用于细分赛道闸门
+        try:
+            wide_result = enhanced_strategy.generate_plan_from_dashboard(
+                heatmap_data, market_data, sectors_data)
+            if not wide_result.get('fallback'):
+                wide_plans = wide_result.get('plans', [])
+        except Exception:
+            wide_plans = []
     else:
         strategy_html = _etf_strategy_html(heatmap_data['latest'] if heatmap_data else None,
                                            market_data, bt)
+
+    # 细分赛道策略(独立仓位池, 受宽行业闸门调节)
+    sub_strategy_html = ""
+    if sub_heatmap_data and _HAS_ENHANCED:
+        sub_strategy_html = _sub_sector_strategy_html(
+            sub_heatmap_data, market_data, wide_plans, sub_sectors_data)
+
     sector_table = _sector_table_html(heatmap_data['latest']) if heatmap_data else ""
     legend = _lifecycle_legend_html()
     backtest_html = _backtest_html(bt)
@@ -1302,11 +1536,20 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
 .factor-table {{ width: 100%; font-size: 11px; border-collapse: collapse; }}
 .factor-table th, .factor-table td {{ padding: 6px 8px; text-align: center; border-bottom: 1px solid #21262d; }}
 .factor-table th {{ background: #161b22; color: #8b949e; font-weight: 500; }}
+/* 细分赛道专用样式 */
+.gate-badge {{ font-size: 10px; padding: 1px 4px; border-radius: 3px; margin-left: 4px; }}
+.gate-badge.up {{ background: #166534; color: #4ade80; }}
+.gate-badge.down {{ background: #7f1d1d; color: #fca5a5; }}
+.gate-badge.ind {{ background: #374151; color: #9ca3af; }}
+.wide-tag {{ font-size: 10px; color: #6b7280; margin-left: 4px; }}
+.sub-sector .layer-badge {{ font-size: 11px; }}
 @media (max-width: 768px) {{
     .layer-header {{ flex-wrap: wrap; gap: 6px; }}
     .layer-desc {{ font-size: 11px; }}
     .plan-etf {{ min-width: 110px; }}
     .factor-table {{ font-size: 10px; }}
+    .gate-badge {{ font-size: 9px; }}
+    .wide-tag {{ font-size: 9px; }}
 }}
 </style>
 </head>
@@ -1371,6 +1614,7 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
         <div id="heatmap" class="chart-mobile-h" style="width: 100%; height: 560px;"></div>
     </div>
     {strategy_html}
+    {sub_strategy_html}
     <div class="sub-title">板块生命周期全景</div>
     {legend}
     {sector_table}
@@ -1999,13 +2243,16 @@ def main():
     print("=" * 60)
     print()
 
-    sectors_data, index_data, margin_data, global_indices, cyb_data, kcb_data = fetch_all_data()
+    sectors_data, index_data, margin_data, global_indices, cyb_data, kcb_data, sub_sectors_data = fetch_all_data()
     if not sectors_data:
         print("\n错误: 无法获取行业板块数据，请检查网络连接")
         return
 
     # --- 板块热力图 + 横截面得分 ---
     heatmap_data = compute_sector_heatmap(sectors_data, num_days=18)
+
+    # --- 细分赛道热力图 ---
+    sub_heatmap_data = compute_sub_sector_heatmap(sub_sectors_data, num_days=18)
 
     # --- 市场环境: 完整版 与 摘除两融因子版(反事实) ---
     breadth_series = heatmap_data['breadth_full'] if heatmap_data else None
@@ -2041,7 +2288,8 @@ def main():
     print("步骤10: 生成HTML看板")
     print("=" * 60)
     html = generate_html(heatmap_data, market_data, idx_charts, idx_texts,
-                         sector_chan, causal, bt, sectors_data=sectors_data)
+                         sector_chan, causal, bt, sectors_data=sectors_data,
+                         sub_heatmap_data=sub_heatmap_data, sub_sectors_data=sub_sectors_data)
 
     with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
         f.write(html)

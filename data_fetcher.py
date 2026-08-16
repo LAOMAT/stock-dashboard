@@ -87,6 +87,96 @@ SECTOR_ETF_MAP = {
 }
 
 
+# 细分赛道ETF映射表（独立于28宽行业，并行评估层）
+# 格式: 赛道名 -> (ETF代码, ETF名称, 所属宽行业, 赛道类型)
+SUB_SECTOR_ETF_MAP = {
+    "创新药":   ("159992", "创新药ETF",   "医药",   "医药健康"),
+    "生物医药": ("512290", "生物医药ETF", "医药",   "医药健康"),
+    "医疗器械": ("159883", "医疗器械ETF", "医药",   "医药健康"),
+    "半导体":   ("512480", "半导体ETF",   "电子",   "科技成长"),
+    "科创芯片": ("588200", "科创芯片ETF", "电子",   "科技成长"),
+    "人工智能": ("159819", "人工智能ETF", "计算机", "科技成长"),
+    "云计算":   ("516510", "云计算ETF",   "计算机", "科技成长"),
+    "软件信创": ("515230", "软件ETF",     "计算机", "科技成长"),
+    "5G通信":   ("515050", "5G通信ETF",   "通信",   "科技成长"),
+    "游戏":     ("159869", "游戏ETF",     "传媒",   "科技成长"),
+    "机器人":   ("562500", "机器人ETF",   "机械",   "科技成长"),
+    "新能源车": ("515030", "新能源车ETF", "汽车",   "新能源"),
+    "光伏":     ("515790", "光伏ETF",     "—",      "新能源"),
+    "电池":     ("159755", "电池ETF",     "—",      "新能源"),
+    "券商":     ("512000", "券商ETF",     "非银",   "金融"),
+    "军工龙头": ("512710", "军工龙头ETF", "军工",   "军工"),
+    "白酒":     ("512690", "酒ETF",       "食品",   "消费"),
+    "黄金股":   ("517520", "黄金股ETF",   "有色",   "周期资源"),
+}
+SUB_SECTOR_ORDER = list(SUB_SECTOR_ETF_MAP.keys())
+
+
+def _fetch_etf_hist_sina(code):
+    """备用: 用新浪接口获取ETF日线"""
+    try:
+        df = ak.fund_etf_hist_sina(symbol=f"sh{code}" if code.startswith('5') else f"sz{code}")
+        if df is None or len(df) == 0:
+            return None
+        df = df.rename(columns={
+            'date': 'date', 'open': 'open', 'close': 'close',
+            'high': 'high', 'low': 'low', 'volume': 'volume'
+        })
+        df['date'] = pd.to_datetime(df['date'])
+        # 新浪接口无成交额, 用成交量*收盘价估算
+        if 'amount' not in df.columns:
+            df['amount'] = df['volume'] * df['close']
+        return df[['date', 'open', 'high', 'low', 'close', 'volume', 'amount']]
+    except Exception:
+        return None
+
+
+def get_sub_sector_data(days=150):
+    """
+    获取细分赛道ETF日线数据(前复权)
+
+    Args:
+        days: 获取最近多少个交易日的数据
+
+    Returns:
+        dict: {赛道名: DataFrame(date, open, high, low, close, volume, amount)}
+    """
+    import time
+    result = {}
+    for name, (code, etf_name, _, _) in SUB_SECTOR_ETF_MAP.items():
+        df = None
+        # 主接口: 东方财富
+        try:
+            df = ak.fund_etf_hist_em(symbol=code, period="daily", adjust="qfq")
+            if df is not None and len(df) > 0:
+                df = df.rename(columns={
+                    '日期': 'date', '开盘': 'open', '收盘': 'close',
+                    '最高': 'high', '最低': 'low', '成交量': 'volume', '成交额': 'amount'
+                })
+        except Exception as e:
+            err_msg = str(e)
+            if 'Connection' in err_msg or 'Remote' in err_msg:
+                print(f"  {name}({code}): 东财接口受限, 尝试备用接口...")
+                df = _fetch_etf_hist_sina(code)
+            else:
+                print(f"  {name}({code}): 获取失败 - {e}")
+                continue
+
+        if df is None or len(df) == 0:
+            print(f"  {name}({code}): 无数据")
+            continue
+
+        try:
+            df['date'] = pd.to_datetime(df['date'])
+            df = df.sort_values('date').reset_index(drop=True)
+            result[name] = df.tail(days).reset_index(drop=True)
+            print(f"  {name}({code}): OK ({len(result[name])}条)")
+            time.sleep(0.3)  # 限速, 避免请求过快
+        except Exception as e:
+            print(f"  {name}({code}): 数据处理失败 - {e}")
+    return result
+
+
 def get_sector_hist_data(sector_name, days=120):
     """
     获取单个行业板块的历史日线数据
