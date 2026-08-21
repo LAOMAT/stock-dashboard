@@ -18,6 +18,7 @@ import os
 import sys
 from datetime import datetime
 
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -79,6 +80,11 @@ def fetch_all_data():
     global_indices = data_fetcher.get_global_indices(days=300)
 
     print("\n" + "=" * 60)
+    print("步骤4a: 获取美债收益率曲线(全球定价之锚)")
+    print("=" * 60)
+    us_treasury_data = data_fetcher.get_us_treasury_data(days=250)
+
+    print("\n" + "=" * 60)
     print("步骤4b: 获取创业板指K线数据")
     print("=" * 60)
     cyb_data = data_fetcher.get_index_kline("sz399006", days=400)
@@ -97,7 +103,7 @@ def fetch_all_data():
     print("=" * 60)
     sub_sectors_data = data_fetcher.get_sub_sector_data(days=150)
 
-    return sectors_data, index_data, margin_data, global_indices, cyb_data, kcb_data, sub_sectors_data
+    return sectors_data, index_data, margin_data, global_indices, cyb_data, kcb_data, sub_sectors_data, us_treasury_data
 
 
 def compute_sector_heatmap(sectors_data, num_days=18):
@@ -614,31 +620,172 @@ def _causal_html(causal):
         f"{a['fwd_ret']:+}%</td></tr>"
         for a in analogy.get('analogs', []))
 
+def compute_us_treasury(us_data, index_data, cyb_data=None):
+    """
+    美债收益率曲线跟踪(全球资产定价之锚)
+
+    分析维度:
+    1. 各期限收益率现值与趋势(近20/60日bp变化)
+    2. 期限利差10Y-2Y: 倒挂(衰退信号)/平坦/陡峭
+    3. 与A股日收益相关性(验证传导强度)
+    4. 综合判读对A股影响
+
+    Returns:
+        dict: dates/y2/y10/y30/spread(图表序列) + 状态指标 + 判读
+    """
+    if us_data is None or len(us_data) == 0:
+        return None
+
+    print("\n" + "=" * 60)
+    print("步骤8b: 美债收益率曲线分析")
+    print("=" * 60)
+
+    latest = us_data.iloc[-1]
+
+    def _chg_bp(col, n):
+        if len(us_data) <= n:
+            base = us_data.iloc[0][col]
+        else:
+            base = us_data.iloc[-1 - n][col]
+        return round((latest[col] - base) * 100, 1)  # % -> bp
+
+    chg = {c: {'d20': _chg_bp(c, 20), 'd60': _chg_bp(c, 60)}
+           for c in ['y2', 'y10', 'y30']}
+
+    # --- 期限利差状态 ---
+    spread = latest['spread_10y2y']
+    if spread < 0:
+        spread_state, spread_color = '倒挂', '#ef4444'
+        spread_note = '衰退信号(10Y<2Y), 历史上倒挂后6-18个月美衰退概率高'
+    elif spread < 0.3:
+        spread_state, spread_color = '平坦', '#eab308'
+        spread_note = '曲线平坦, 降息预期与增长预期拉锯'
+    else:
+        spread_state, spread_color = '陡峭', '#22c55e'
+        spread_note = '曲线陡峭, 正常化形态(复苏/降息预期)'
+
+    # --- 长端趋势 ---
+    long_trend = ('快速上行' if chg['y10']['d20'] >= 15 else
+                  '温和上行' if chg['y10']['d20'] > 3 else
+                  '快速下行' if chg['y10']['d20'] <= -15 else
+                  '温和下行' if chg['y10']['d20'] < -3 else '横盘')
+
+    # --- 与A股相关性(近60交易日, 美债日变化 vs 指数日收益) ---
+    corr = {'上证': None, '创业板': None}
+    def _calc_corr(idx_df, label):
+        try:
+            if idx_df is None or len(idx_df) < 60:
+                return None
+            m = us_data[['date', 'y10']].copy()
+            m = m.merge(idx_df[['date', 'close']], on='date', how='inner')
+            m = m.tail(60)
+            if len(m) < 30:
+                return None
+            y_chg = m['y10'].diff()
+            r_chg = m['close'].pct_change()
+            valid = y_chg.notna() & r_chg.notna()
+            if valid.sum() < 30:
+                return None
+            return round(float(np.corrcoef(y_chg[valid], r_chg[valid])[0, 1]), 2)
+        except Exception:
+            return None
+    corr['上证'] = _calc_corr(index_data, '上证')
+    corr['创业板'] = _calc_corr(cyb_data, '创业板')
+
+    # --- 综合判读 ---
+    notes = []
+    # 长端快速上行 -> 成长股承压
+    if long_trend in ('快速上行',):
+        notes.append('10Y美债快速上行→全球风险资产估值承压, A股科技/成长风格偏空, '
+                     '高股息/黄金相对占优')
+    elif long_trend == '快速下行':
+        notes.append('10Y美债快速下行→流动性宽松预期, 利好A股成长/科技风格(分母端改善)')
+    else:
+        notes.append(f'10Y美债{long_trend}, 分母端冲击暂缓, A股以自身基本面定价为主')
+    # 倒挂状态
+    if spread < 0:
+        notes.append('收益率曲线倒挂中: 衰退预期升温, 美股防御板块占优; '
+                     '若倒挂后快速陡峭化(2Y快速下行)需警惕衰退兑现')
+    # 相关性传导
+    corr_valid = [v for v in corr.values() if v is not None]
+    if corr_valid:
+        avg_corr = sum(corr_valid) / len(corr_valid)
+        if avg_corr <= -0.25:
+            notes.append(f'近60日A股与10Y日变化平均相关{avg_corr:+.2f}: 负相关显著, '
+                         '美债利率上行对A股有实质性压制(北向/成长股敏感)')
+        elif avg_corr >= 0.25:
+            notes.append(f'近60日A股与10Y日变化平均相关{avg_corr:+.2f}: 正相关, '
+                         '两者或同受"增长预期"驱动')
+        else:
+            notes.append(f'近60日A股与10Y日变化相关性弱({avg_corr:+.2f}), 当前传导不显著')
+
+    result = {
+        'dates': us_data['date'].dt.strftime('%Y-%m-%d').tolist(),
+        'y2_series': [round(v, 3) for v in us_data['y2']],
+        'y10_series': [round(v, 3) for v in us_data['y10']],
+        'y30_series': [round(v, 3) for v in us_data['y30']],
+        'spread_series': [round(v, 3) for v in us_data['spread_10y2y']],
+        'latest_date': us_data.iloc[-1]['date'].strftime('%Y-%m-%d'),
+        'latest': {
+            'y2': round(latest['y2'], 2), 'y5': round(latest['y5'], 2),
+            'y10': round(latest['y10'], 2), 'y30': round(latest['y30'], 2),
+        },
+        'chg': chg,
+        'spread': round(spread, 2), 'spread_state': spread_state,
+        'spread_color': spread_color, 'spread_note': spread_note,
+        'long_trend': long_trend,
+        'corr': corr,
+        'notes': notes,
+    }
+    print(f"  10Y={result['latest']['y10']}% (20日{chg['y10']['d20']:+}bp) | "
+          f"30Y={result['latest']['y30']}% | 利差{result['spread']*100:+.0f}bp [{spread_state}] | "
+          f"长端趋势: {long_trend}")
+    return result
+
+
+def _us_treasury_html(us_tr):
+    """美债收益率曲线跟踪面板"""
+    if not us_tr:
+        return ""
+    lt = us_tr['latest']
+
+    def _chg_txt(col):
+        c = us_tr['chg'][col]
+        c20 = c['d20']
+        color = '#ef4444' if c20 > 3 else ('#22c55e' if c20 < -3 else '#8b949e')
+        return f"<span style='color:{color}'>{c20:+.0f}bp/20日</span>"
+
+    corr = us_tr['corr']
+    corr_txt = ' | '.join(f"{k} {v:+.2f}" if v is not None else f"{k} N/A"
+                          for k, v in corr.items())
+
+    notes_html = ''.join(f"<li>{n}</li>" for n in us_tr['notes'])
+
     return f"""
-<div class="chart-section">
-    <div class="chart-title">因果推导面板 (格兰杰因果 + 全球联动 + 历史类比推演)</div>
-    <div class="causal-grid">
-        <div class="causal-card">
-            <div class="causal-h">资金因果检验 (Granger)</div>
-            <table class="mini-table">{granger_rows}</table>
-            <div class="causal-note">判读: "显著因果"=该变量对次日涨跌有预测力;
-            "追涨性"显著则提示两融是跟风盘而非聪明钱。</div>
-        </div>
-        <div class="causal-card">
-            <div class="causal-h">全球市场联动</div>
-            <table class="mini-table"><thead><tr><th>指数</th><th>同步</th><th>领先</th><th>结论</th></tr></thead>
-            {global_rows}</table>
-            <div class="causal-note">判读: 隔夜领先相关&gt;0.3为强联动,
-            隔夜美股大跌且强联动时,次日A股开盘需防守。</div>
-        </div>
-        <div class="causal-card">
-            <div class="causal-h">历史类比推演 (四因子向量余弦相似)</div>
-            <div class="analogy-forecast">{analogy.get('forecast', '样本不足')}</div>
-            <table class="mini-table"><thead><tr><th>相似历史日</th><th>相似度</th><th>后10日涨跌</th></tr></thead>
-            {analogy_rows}</table>
-            <div class="causal-note">判读: 相似的资金/趋势结构往往重演相似走势,
-            作为MRS仓位建议的佐证或反证。</div>
-        </div>
+<div class="chart-section" id="us-treasury">
+    <div class="chart-title"><span class="mod-badge alt">进阶 · 全球定价之锚</span>长期美债收益率曲线跟踪 (2Y/10Y/30Y + 期限利差, 截至 {us_tr['latest_date']})</div>
+    <div class="stat-grid">
+        <div class="stat-card"><div class="stat-label">10年期美债 (全球资产定价之锚)</div>
+            <div class="stat-value">{lt['y10']:.2f}%</div>
+            <div class="stat-sub">20日变化{_chg_txt('y10')} · 60日{us_tr['chg']['y10']['d60']:+.0f}bp</div></div>
+        <div class="stat-card"><div class="stat-label">30年期美债 (长端/通胀预期)</div>
+            <div class="stat-value">{lt['y30']:.2f}%</div>
+            <div class="stat-sub">20日变化{_chg_txt('y30')} · 60日{us_tr['chg']['y30']['d60']:+.0f}bp</div></div>
+        <div class="stat-card"><div class="stat-label">期限利差 10Y-2Y</div>
+            <div class="stat-value" style="color:{us_tr['spread_color']}">{us_tr['spread']*100:+.0f}bp</div>
+            <div class="stat-sub">{us_tr['spread_state']} · {us_tr['spread_note']}</div></div>
+        <div class="stat-card"><div class="stat-label">长端趋势判定</div>
+            <div class="stat-value" style="font-size:18px">{us_tr['long_trend']}</div>
+            <div class="stat-sub">对A股传导: {corr_txt}</div></div>
+    </div>
+    <div class="chart-container">
+        <div id="usTreasuryChart" class="chart-mobile-h" style="width: 100%; height: 420px;"></div>
+    </div>
+    <div class="causal-note" style="margin-top:8px">
+        <b style="color:#58a6ff">判读框架:</b>
+        <ul style="padding-left:18px;margin:6px 0 0 0">{notes_html}</ul>
+        <div style="margin-top:6px">经验法则: 10Y快速上行&gt;15bp/20日→成长股承压; 10Y-2Y倒挂→衰退信号(6-18个月);
+        30Y-10Y走阔→通胀/期限溢价升温, 利好黄金资源。美债是全球资产分母, 直接影响A股外资流向与成长股估值。</div>
     </div>
 </div>"""
 
@@ -1137,7 +1284,8 @@ def _sub_sector_strategy_html(sub_heatmap_data, market_data, wide_plans=None, su
 
 def generate_html(heatmap_data, market_data, idx_charts, idx_texts,
                   sector_chan, causal, bt, sectors_data=None,
-                  sub_heatmap_data=None, sub_sectors_data=None):
+                  sub_heatmap_data=None, sub_sectors_data=None,
+                  us_treasury=None):
     """生成HTML看板"""
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -1173,10 +1321,18 @@ def generate_html(heatmap_data, market_data, idx_charts, idx_texts,
                   (f"热力图/生命周期截至 {heatmap_latest}", heatmap_latest and heatmap_latest != idx_latest),
                   (f"MRS市场环境截至 {mrs_latest}", mrs_latest and mrs_latest != idx_latest)]
                  if x[1]]
+    # 行业指数ETF补齐透明标注: 申万源T+1, 当日行情由对应主流ETF推算
+    fill_info = getattr(data_fetcher, 'SECTOR_ETF_FILL_INFO', {})
+    fill_note = ""
+    if fill_info and idx_latest and max(fill_info.values()) == idx_latest:
+        fill_note = (f"（行业{idx_latest}数据由对应ETF推算补齐·申万源T+1"
+                     f"·两融截至{mrs_latest if mrs_latest else idx_latest}）")
     date_note = ""
     if idx_latest:
         date_note = " ｜ ".join(parts + lag_parts)
-        if lag_parts:
+        if fill_note:
+            date_note += fill_note
+        elif lag_parts:
             date_note += "（行业/两融数据源T+1更新）"
 
     # ---- MRS摘要面板 ----
@@ -1305,6 +1461,9 @@ def generate_html(heatmap_data, market_data, idx_charts, idx_texts,
     sector_table = _sector_table_html(heatmap_data['latest']) if heatmap_data else ""
     legend = _lifecycle_legend_html()
     backtest_html = _backtest_html(bt)
+    # 美债收益率曲线跟踪面板
+    us_treasury_html = _us_treasury_html(us_treasury)
+    us_treasury_json = json.dumps(us_treasury, ensure_ascii=False) if us_treasury else "null"
     # 因果推导仅作底层分析逻辑, 不在看板展示(causal结果已在控制台输出)
 
     # ---- 行业板块多周期缠论面板(放在因果面板之前) ----
@@ -1621,10 +1780,12 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
     {backtest_html}
 </div>
 
+{us_treasury_html}
+
 {sector_chan_section}
 
 <div class="footer">
-    数据来源: akshare(申万行业指数/上证/创业板/科创50/沪深两融/美股指数) |
+    数据来源: akshare(申万行业指数/上证/创业板/科创50/沪深两融/美股指数/中美国债收益率) |
     技术面: 缠论(分型·笔·中枢·背驰·买卖点)+简化波浪+量柱理论 |
     量化: 板块横截面RPS40%+趋势位置25%+量能健康20%+RPS5 15% | 市场MRS=价格35%+量能20%+两融25%+宽度20% |
     进化: 网格寻优+走前验证+反事实回测(因果Alpha, 底层逻辑)
@@ -1638,6 +1799,7 @@ var idxBanners = {banners_json};
 var sectorChanData = {sector_chan_json};
 var equityData = {equity_json};
 var benchmarkData = {benchmark_json};
+var usTreasuryData = {us_treasury_json};
 
 // ===== 图0: 指数多周期缠论结构图(工厂函数, 指数切换 × 日/60/30/15/5分钟切换) =====
 function createIdxChanChart(elId, idxBtnsId, lvlBtnsId, stateId, bannerId, allData) {{
@@ -2215,6 +2377,59 @@ createIdxChanChart('chan', 'idx-index-btns', 'idx-level-btns',
     window.addEventListener('resize', function() {{ chart.resize(); }});
 }})();
 
+// ===== 图4: 长期美债收益率曲线(2Y/10Y/30Y + 10Y-2Y利差) =====
+(function() {{
+    if (!usTreasuryData) return;
+    var el = document.getElementById('usTreasuryChart');
+    if (!el) return;
+    var chart = echarts.init(el);
+    var d = usTreasuryData;
+    var option = {{
+        tooltip: {{ trigger: 'axis',
+            backgroundColor: 'rgba(22,27,34,0.95)', borderColor: '#30363d',
+            textStyle: {{ color: '#c9d1d9', fontSize: 12 }},
+            valueFormatter: function(v) {{ return v === null ? '-' : v.toFixed(2) + '%'; }} }},
+        legend: {{ show: true, top: 0, right: 10,
+            textStyle: {{ color: '#8b949e', fontSize: 11 }},
+            data: ['30年期', '10年期', '2年期', '利差10Y-2Y(右轴)'] }},
+        grid: {{ top: 34, bottom: 40, left: 55, right: 60 }},
+        xAxis: {{ type: 'category', data: d.dates,
+            axisLabel: {{ color: '#8b949e', fontSize: 10 }},
+            axisLine: {{ lineStyle: {{ color: '#30363d' }} }} }},
+        yAxis: [
+            {{ type: 'value', name: '收益率%', scale: true,
+               nameTextStyle: {{ color: '#8b949e', fontSize: 10 }},
+               axisLabel: {{ color: '#8b949e', fontSize: 10,
+                   formatter: function(v) {{ return v.toFixed(1) + '%'; }} }},
+               splitLine: {{ lineStyle: {{ color: '#21262d' }} }} }},
+            {{ type: 'value', name: '利差%', position: 'right', scale: true,
+               nameTextStyle: {{ color: '#8b949e', fontSize: 10 }},
+               axisLabel: {{ color: '#8b949e', fontSize: 10,
+                   formatter: function(v) {{ return (v * 100).toFixed(0) + 'bp'; }} }},
+               splitLine: {{ show: false }} }}
+        ],
+        dataZoom: [{{ type: 'inside', start: 0, end: 100 }}],
+        series: [
+            {{ name: '30年期', type: 'line', yAxisIndex: 0, data: d.y30_series,
+               symbol: 'none', smooth: true,
+               lineStyle: {{ color: '#f97316', width: 2 }} }},
+            {{ name: '10年期', type: 'line', yAxisIndex: 0, data: d.y10_series,
+               symbol: 'none', smooth: true,
+               lineStyle: {{ color: '#58a6ff', width: 2 }} }},
+            {{ name: '2年期', type: 'line', yAxisIndex: 0, data: d.y2_series,
+               symbol: 'none', smooth: true,
+               lineStyle: {{ color: '#22c55e', width: 1.5 }} }},
+            {{ name: '利差10Y-2Y(右轴)', type: 'bar', yAxisIndex: 1,
+               data: d.spread_series, barWidth: '60%',
+               itemStyle: {{ color: function(p) {{
+                   return p.value >= 0 ? 'rgba(88,166,255,0.35)' : 'rgba(239,68,68,0.55)';
+               }} }} }}
+        ]
+    }};
+    chart.setOption(option);
+    window.addEventListener('resize', function() {{ chart.resize(); }});
+}})();
+
 // === 移动端: 屏幕旋转/尺寸变化时强制重绘所有图表 ===
 function resizeAllCharts() {{
     document.querySelectorAll('[_echarts_instance_]').forEach(function(el) {{
@@ -2243,7 +2458,7 @@ def main():
     print("=" * 60)
     print()
 
-    sectors_data, index_data, margin_data, global_indices, cyb_data, kcb_data, sub_sectors_data = fetch_all_data()
+    sectors_data, index_data, margin_data, global_indices, cyb_data, kcb_data, sub_sectors_data, us_treasury_data = fetch_all_data()
     if not sectors_data:
         print("\n错误: 无法获取行业板块数据，请检查网络连接")
         return
@@ -2280,6 +2495,9 @@ def main():
     # --- 因果推导(仅作底层分析逻辑, 不在看板展示) ---
     causal = compute_causal(index_data, margin_data, global_indices, regime_full)
 
+    # --- 美债收益率曲线跟踪 ---
+    us_tr = compute_us_treasury(us_treasury_data, index_data, cyb_data)
+
     # --- 回测与自进化 ---
     bt = compute_backtest(heatmap_data, regime_full, regime_no_margin, index_data) \
         if heatmap_data else None
@@ -2289,7 +2507,8 @@ def main():
     print("=" * 60)
     html = generate_html(heatmap_data, market_data, idx_charts, idx_texts,
                          sector_chan, causal, bt, sectors_data=sectors_data,
-                         sub_heatmap_data=sub_heatmap_data, sub_sectors_data=sub_sectors_data)
+                         sub_heatmap_data=sub_heatmap_data, sub_sectors_data=sub_sectors_data,
+                         us_treasury=us_tr)
 
     with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
         f.write(html)

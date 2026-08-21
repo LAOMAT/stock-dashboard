@@ -111,17 +111,16 @@ SUB_SECTOR_ETF_MAP = {
 }
 SUB_SECTOR_ORDER = list(SUB_SECTOR_ETF_MAP.keys())
 
+# 行业指数ETF补齐状态: {行业名: 补齐到的日期}, 供看板页头透明标注
+SECTOR_ETF_FILL_INFO = {}
+
 
 def _fetch_etf_hist_sina(code):
-    """备用: 用新浪接口获取ETF日线"""
+    """备用: 用新浪接口获取ETF日线(当日收盘后即更新)"""
     try:
         df = ak.fund_etf_hist_sina(symbol=f"sh{code}" if code.startswith('5') else f"sz{code}")
         if df is None or len(df) == 0:
             return None
-        df = df.rename(columns={
-            'date': 'date', 'open': 'open', 'close': 'close',
-            'high': 'high', 'low': 'low', 'volume': 'volume'
-        })
         df['date'] = pd.to_datetime(df['date'])
         # 新浪接口无成交额, 用成交量*收盘价估算
         if 'amount' not in df.columns:
@@ -129,6 +128,70 @@ def _fetch_etf_hist_sina(code):
         return df[['date', 'open', 'high', 'low', 'close', 'volume', 'amount']]
     except Exception:
         return None
+
+
+def _fill_sector_with_etf(sector_name, sw_df):
+    """
+    申万行业指数为T+1更新, 当日缺失时用对应主流ETF(新浪源, 当日更新)推算补齐:
+    - 价格: 行业指数前收 × ETF当日相对涨跌幅(OHLC分别推算)
+    - 成交量: 申万5日均量 × ETF当日量比(保持申万量纲, 量能形态跟随ETF)
+    仅补齐申万缺失的最新交易日; 申万数据源更新后自动被真实数据覆盖
+    """
+    etf_info = SECTOR_ETF_MAP.get(sector_name)
+    if not etf_info or sw_df is None or len(sw_df) < 10:
+        return sw_df
+    etf_code = etf_info[0]
+    try:
+        etf = _fetch_etf_hist_sina(etf_code)
+        if etf is None or len(etf) < 20:
+            return sw_df
+        etf = etf.sort_values('date').reset_index(drop=True)
+        sw_last_date = sw_df.iloc[-1]['date']
+        missing = etf[etf['date'] > sw_last_date]
+        if len(missing) == 0:
+            return sw_df
+        sw_vol_ma5 = float(sw_df['volume'].tail(5).mean())
+        filled = 0
+        cur = sw_df.copy()
+        for _, e in missing.iterrows():
+            prev_date = cur.iloc[-1]['date']
+            e_prev = etf[etf['date'] == prev_date]
+            if len(e_prev) == 0 or float(e_prev.iloc[0]['close']) <= 0:
+                continue
+            e_prev_close = float(e_prev.iloc[0]['close'])
+            base_close = float(cur.iloc[-1]['close'])
+            scale = float(e['close']) / e_prev_close
+            scale_o = float(e['open']) / e_prev_close
+            scale_h = float(e['high']) / e_prev_close
+            scale_l = float(e['low']) / e_prev_close
+            # ETF量比(当日量/前5日均量) -> 映射到申万量纲
+            e_idx = etf.index[etf['date'] == e['date']]
+            if len(e_idx) > 0 and e_idx[0] >= 5:
+                e_vol_ma5 = float(etf['volume'].iloc[e_idx[0] - 5:e_idx[0]].mean())
+                vol_ratio = float(e['volume']) / e_vol_ma5 if e_vol_ma5 > 0 else 1.0
+            else:
+                vol_ratio = 1.0
+            new_close = base_close * scale
+            new_row = pd.DataFrame([{
+                'date': e['date'],
+                'open': base_close * scale_o,
+                'high': base_close * scale_h,
+                'low': base_close * scale_l,
+                'close': new_close,
+                'volume': sw_vol_ma5 * vol_ratio,
+                'amount': sw_vol_ma5 * vol_ratio * new_close,
+            }])
+            cur = pd.concat([cur, new_row], ignore_index=True)
+            filled += 1
+        if filled > 0:
+            d0 = missing.iloc[0]['date'].strftime('%m-%d')
+            d1 = missing.iloc[-1]['date'].strftime('%m-%d')
+            print(f" [ETF补齐至{d1}]" if filled == 1 else f" [ETF补齐{d0}~{d1}]", end="")
+            # 记录补齐状态(供看板页头标注)
+            SECTOR_ETF_FILL_INFO[sector_name] = missing.iloc[-1]['date'].strftime('%Y-%m-%d')
+        return cur
+    except Exception:
+        return sw_df
 
 
 def get_sub_sector_data(days=150):
@@ -177,13 +240,17 @@ def get_sub_sector_data(days=150):
     return result
 
 
-def get_sector_hist_data(sector_name, days=120):
+def get_sector_hist_data(sector_name, days=120, etf_fill=True):
     """
     获取单个行业板块的历史日线数据
+
+    申万指数源为T+1更新; etf_fill=True时, 当日缺失部分用对应主流ETF
+    (新浪源, 当日收盘后即更新)推算补齐, 保证行业数据与大盘指数同步
 
     Args:
         sector_name: 行业显示名称（如"银行"）
         days: 获取最近多少个交易日的数据
+        etf_fill: 是否启用ETF当日补齐
 
     Returns:
         DataFrame: 包含 date, open, high, low, close, volume, amount 的日线数据
@@ -205,6 +272,10 @@ def get_sector_hist_data(sector_name, days=120):
         })
         df['date'] = pd.to_datetime(df['date'])
         df = df.sort_values('date').reset_index(drop=True)
+
+        # 申万T+1: 当日缺失用对应ETF行情推算补齐
+        if etf_fill:
+            df = _fill_sector_with_etf(sector_name, df)
 
         # 取最近N天
         df = df.tail(days).reset_index(drop=True)
@@ -343,6 +414,42 @@ def get_margin_data(days=60):
                 combined[['date', 'balance', 'margin_balance', 'margin_net']])
 
     return combined[['date', 'margin_net', 'margin_balance']].tail(days).reset_index(drop=True)
+
+
+def get_us_treasury_data(days=250):
+    """
+    获取美债收益率曲线数据(全球资产定价之锚)
+    数据源: 东财中美国债收益率对比接口 bond_zh_us_rate
+    Returns:
+        DataFrame: date, y2, y5, y10, y30, spread_10y2y (单位: %)
+        失败时返回 None
+    """
+    try:
+        df = ak.bond_zh_us_rate(start_date="20200101")
+        if df is None or len(df) == 0:
+            print("  美债收益率: 无数据")
+            return None
+        df = df.rename(columns={
+            '日期': 'date',
+            '美国国债收益率2年': 'y2',
+            '美国国债收益率5年': 'y5',
+            '美国国债收益率10年': 'y10',
+            '美国国债收益率30年': 'y30',
+            '美国国债收益率10年-2年': 'spread_10y2y',
+        })
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.sort_values('date').reset_index(drop=True)
+        # 前向填充缺失值(个别日期缺失)
+        for col in ['y2', 'y5', 'y10', 'y30', 'spread_10y2y']:
+            df[col] = df[col].ffill()
+        df['spread_10y2y'] = df['y10'] - df['y2']
+        df = df.dropna(subset=['y10']).tail(days).reset_index(drop=True)
+        print(f"  美债收益率: {len(df)}条, 最新={df.iloc[-1]['date'].strftime('%Y-%m-%d')}, "
+              f"10Y={df.iloc[-1]['y10']:.2f}% 30Y={df.iloc[-1]['y30']:.2f}%")
+        return df[['date', 'y2', 'y5', 'y10', 'y30', 'spread_10y2y']]
+    except Exception as e:
+        print(f"  美债收益率获取失败: {e}")
+        return None
 
 
 def get_global_indices(days=300):
