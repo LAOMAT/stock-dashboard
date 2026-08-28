@@ -125,6 +125,86 @@ def mrs_to_position(mrs):
     return 0.15
 
 
+def mrs_to_position_band(mrs):
+    """MRS -> 建议总仓位区间(与看板MRS档位严格一致)
+
+    区间划分: ≥75进攻8~10成 | 60-75偏多6~8成 | 45-60震荡4~6成 |
+              30-45防守2~4成 | <30空仓(≤1.5成)
+    Returns:
+        (下限, 上限), 小数形式
+    """
+    if mrs >= 75: return (0.80, 1.00)
+    if mrs >= 60: return (0.60, 0.80)
+    if mrs >= 45: return (0.40, 0.60)
+    if mrs >= 30: return (0.20, 0.40)
+    return (0.00, 0.15)
+
+
+def align_total_position_to_mrs(wide_result, sub_result=None):
+    """
+    总仓位预算协调器: 宽行业池+细分池合计仓位对齐MRS建议仓位区间
+
+    规则:
+      1. MRS建议仓位区间上限 = 两池合计总预算(硬约束)
+      2. 合计超上限 -> 两池按现有仓位比例同步缩放(保持相对强弱)
+      3. 合计低于下限 -> 不强制加仓(预算是上限约束, 信号不足允许低配)
+      4. 细分池内部40%上限、宽行业池95%上限仍然生效(先池内归一再跨池协调)
+
+    Args:
+        wide_result: generate_plan_from_dashboard输出
+        sub_result:  generate_sub_sector_plan输出(可选)
+    Returns:
+        dict: mrs/zone/band/cap_pct/wide_pct/sub_pct/total_pct/scaled/band_txt
+        None: 两池均无有效计划
+    """
+    results = [r for r in (wide_result, sub_result)
+               if r and not r.get('fallback') and r.get('plans')]
+    if not results:
+        return None
+
+    src = wide_result if wide_result else sub_result
+    mrs = src.get('mrs', 50.0)
+    lo, hi = mrs_to_position_band(mrs)
+    cap = hi * 100
+
+    def _pool_pct(r):
+        return r['total_position_pct'] if r else 0.0
+
+    wide_pct, sub_pct = _pool_pct(wide_result), _pool_pct(sub_result)
+    total = round(wide_pct + sub_pct, 1)
+
+    scaled = False
+    if total > cap + 0.05:  # 超预算 -> 两池等比缩放
+        scale = cap / total
+        for r in results:
+            for p in r['plans']:
+                if p['position_pct'] > 0:
+                    p['position_pct'] = round(p['position_pct'] * scale, 1)
+            r['total_position_pct'] = round(
+                sum(p['position_pct'] for p in r['plans']), 1)
+        wide_pct, sub_pct = _pool_pct(wide_result), _pool_pct(sub_result)
+        total = round(wide_pct + sub_pct, 1)
+        scaled = True
+
+    zone = ('进攻' if mrs >= 75 else '偏多' if mrs >= 60 else
+            '震荡' if mrs >= 45 else '防守' if mrs >= 30 else '空仓')
+    if lo > 0:
+        band_txt = f"{lo*10:.0f}~{hi*10:.0f}成"
+    else:
+        band_txt = f"空仓(≤{hi*10:g}成)"
+
+    info = {
+        'mrs': mrs, 'zone': zone,
+        'band': (lo, hi), 'cap_pct': round(cap, 1),
+        'wide_pct': wide_pct, 'sub_pct': sub_pct,
+        'total_pct': total, 'scaled': scaled, 'band_txt': band_txt,
+    }
+    print(f"  [总仓位预算] MRS={mrs:.0f}({zone}) 建议{band_txt}(≤{cap:.0f}%) | "
+          f"宽行业池{wide_pct:.1f}% + 细分池{sub_pct:.1f}% = 合计{total:.1f}%"
+          f"{' [已按预算等比缩放]' if scaled else ' [符合预算]'}")
+    return info
+
+
 # ======================================================================
 # 辅助: 缠论/量学信号合并
 # ======================================================================

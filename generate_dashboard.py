@@ -560,7 +560,8 @@ def compute_backtest(heatmap_data, regime_full, regime_no_margin, index_data=Non
         'params': result['params'],
         'stats': {k: full[k] for k in ('n_trades', 'win_rate', 'total_ret',
                                        'ann_ret', 'max_dd', 'holdings_now',
-                                       'holdings_detail')},
+                                       'holdings_detail', 'total_pos_pct',
+                                       'last_mrs')},
         'trades_recent': full['trades'][-15:],
         'equity': equity_payload,
         'benchmark': benchmark_payload,
@@ -820,8 +821,10 @@ def _backtest_html(bt):
                    f"<div class='stat-value' style='color:{alpha_color}'>{cf['causal_alpha']:+}%</div>"
                    f"<div class='stat-sub'>含{cf['with_margin_ann']}% vs 摘除{cf['without_margin_ann']}%</div></div>")
 
-    # 持仓详情表
+    # 持仓详情表(仓位严格按MRS总仓位上限加权, 合计仓位对齐MRS建议)
     hd = s.get('holdings_detail') or []
+    total_pos_pct = s.get('total_pos_pct', 0.0)
+    last_mrs = s.get('last_mrs')
     if hd:
         hold_rows = "".join(
             f"<tr><td>{h['sector']}</td><td>{h['entry_date']}</td>"
@@ -829,12 +832,20 @@ def _backtest_html(bt):
             f"<td style='color:{'#ef4444' if h['return'] > 0 else '#22c55e'}'>{h['return']:+}%</td>"
             f"<td>{h['weight']}%</td></tr>"
             for h in hd)
-        hold_table = (f"<div class='causal-h'>当前持仓 ({len(hd)}只, 等权分配)</div>"
+        # 合计行
+        hold_rows += (f"<tr style='border-top:1px solid #30363d;font-weight:600'>"
+                      f"<td colspan='5' style='text-align:right;color:#8b949e'>合计仓位</td>"
+                      f"<td style='color:#58a6ff'>{total_pos_pct:.1f}%</td></tr>")
+        mrs_note = f" · MRS{last_mrs:.0f}建议" if last_mrs else ""
+        hold_table = (f"<div class='causal-h'>当前持仓 ({len(hd)}只, 持仓内等权 · 总仓位合计{total_pos_pct:.1f}%{mrs_note})</div>"
                       f"<table class='mini-table'><thead><tr>"
                       f"<th>板块</th><th>买入日</th><th>买入价</th><th>现价</th>"
                       f"<th>浮盈</th><th>仓位</th></tr></thead>{hold_rows}</table>")
     else:
         hold_table = "<div class='causal-h'>当前持仓: 空仓</div>"
+
+    # 当前仓位提示
+    pos_note = f"合计{total_pos_pct:.1f}%" if hd else "空仓"
 
     return f"""
     <div class="sub-title">行业ETF量化策略 (板块轮动: 启动期买入/高潮期止盈/退潮期卖出, MRS控仓)</div>
@@ -850,8 +861,9 @@ def _backtest_html(bt):
         <div class="stat-card"><div class="stat-label">胜率</div>
             <div class="stat-value">{s['win_rate']}%</div>
             <div class="stat-sub">共{s['n_trades']}笔交易</div></div>
-        <div class="stat-card"><div class="stat-label">当前持仓</div>
-            <div class="stat-value" style="font-size:15px">{holdings}</div></div>
+        <div class="stat-card"><div class="stat-label">当前持仓仓位</div>
+            <div class="stat-value" style="font-size:15px">{pos_note}</div>
+            <div class="stat-sub">{holdings}</div></div>
         {cf_html}
     </div>
     <div id="equity" class="chart-mobile-h" style="width: 100%; height: 280px;"></div>
@@ -998,7 +1010,8 @@ def _etf_strategy_html(latest, market_data, bt):
     <div class='cb-sub' style='margin-bottom:4px'>{wait_txt}</div>"""
 
 
-def _enhanced_etf_strategy_html(latest, market_data, sectors_data=None, bt=None):
+def _enhanced_etf_strategy_html(latest, market_data, sectors_data=None, bt=None,
+                                plan_result=None, budget=None):
     """增强版行业ETF投资策略: 三层底仓+多因子共振(每日更新)
 
     设计理念(详见enhanced_strategy.py):
@@ -1007,6 +1020,8 @@ def _enhanced_etf_strategy_html(latest, market_data, sectors_data=None, bt=None)
       观察仓(术-验证层): 板块异动但多因子未共振, 小仓试探(5-10%)
     展示: 每层显示板块/评分/仓位/操作信号/依据, 附多因子评分明细与经典策略对比
     健壮性: 模块缺失/策略内部fallback/任何异常 -> 自动退回经典MRS+生命周期策略
+    plan_result: 外部预计算的交易计划(已含总仓位预算协调), 传入则跳过内部计算
+    budget:      align_total_position_to_mrs输出的预算信息(头部展示)
     """
     if not latest or not market_data:
         return ""
@@ -1015,37 +1030,56 @@ def _enhanced_etf_strategy_html(latest, market_data, sectors_data=None, bt=None)
         return _etf_strategy_html(latest, market_data, bt)  # fallback
 
     try:
-        # 构建策略参数: 传入板块K线时自动计算缠论买卖点/量柱黄金柱信号
-        params = {
-            'use_enhanced': True,
-            'compute_chan_vol': True,  # 自动计算缠论/量柱
-        }
+        if plan_result is not None:
+            # 外部已计算(含总仓位预算协调), 直接使用
+            pr = plan_result
+        else:
+            # 构建策略参数: 传入板块K线时自动计算缠论买卖点/量柱黄金柱信号
+            params = {
+                'use_enhanced': True,
+                'compute_chan_vol': True,  # 自动计算缠论/量柱
+            }
 
-        # latest补充板块最新收盘价(供缠论中枢位置/量柱支撑判断现价)
-        enriched = {name: dict(v) for name, v in latest.items()}
-        if sectors_data:
-            for name, v in enriched.items():
-                kdf = sectors_data.get(name)
-                if kdf is not None and len(kdf) > 0 and 'close' in kdf.columns:
-                    v['close'] = float(kdf['close'].iloc[-1])
+            # latest补充板块最新收盘价(供缠论中枢位置/量柱支撑判断现价)
+            enriched = {name: dict(v) for name, v in latest.items()}
+            if sectors_data:
+                for name, v in enriched.items():
+                    kdf = sectors_data.get(name)
+                    if kdf is not None and len(kdf) > 0 and 'close' in kdf.columns:
+                        v['close'] = float(kdf['close'].iloc[-1])
 
-        # 生成增强策略交易计划(单板块异常在策略内部已隔离为空仓计划)
-        strategy = enhanced_strategy.EnhancedETFStrategy(params)
-        plan_result = strategy.generate_trading_plan(enriched, market_data, sectors_data)
+            # 生成增强策略交易计划(单板块异常在策略内部已隔离为空仓计划)
+            strategy = enhanced_strategy.EnhancedETFStrategy(params)
+            pr = strategy.generate_trading_plan(enriched, market_data, sectors_data)
 
         # 策略内部判定fallback(核心引擎缺失) -> 退回经典策略视图
-        if plan_result.get('fallback'):
+        if pr.get('fallback'):
             return _etf_strategy_html(latest, market_data, bt)
 
         # 按层级分组(正仓/机动仓/观察仓)
-        plans = plan_result['plans']
+        plans = pr['plans']
         zheng_plans = [p for p in plans if p['warehouse_level'] == '正仓']
         jidong_plans = [p for p in plans if p['warehouse_level'] == '机动仓']
         guancha_plans = [p for p in plans if p['warehouse_level'] == '观察仓']
 
-        emotion_phase = plan_result['emotion_phase']
-        mrs = plan_result['mrs']
-        total_pos = plan_result['total_position_pct']
+        emotion_phase = pr['emotion_phase']
+        mrs = pr['mrs']
+        total_pos = pr['total_position_pct']
+
+        # 总仓位预算行(宽行业池+细分池合计对齐MRS建议仓位)
+        budget_html = ""
+        if budget:
+            state_txt = ('已按预算等比缩放' if budget['scaled'] else '符合预算')
+            state_color = '#eab308' if budget['scaled'] else '#22c55e'
+            budget_html = f"""
+        <div class='budget-line'>
+            <b>总仓位预算</b>: MRS {budget['mrs']:.0f}({budget['zone']}) →
+            建议 <b style='color:#f0f6fc'>{budget['band_txt']}</b>(上限{budget['cap_pct']:.0f}%) ｜
+            宽行业池 <b style='color:#f0f6fc'>{budget['wide_pct']:.1f}%</b> +
+            细分池 <b style='color:#f0f6fc'>{budget['sub_pct']:.1f}%</b> =
+            合计 <b style='color:{state_color}'>{budget['total_pct']:.1f}%</b>
+            <span style='color:{state_color}'>· {state_txt}</span>
+        </div>"""
 
         def _plan_row(p):
             action_cls = {'买入': 'buy', '持有': 'hold', '止盈': 'tp',
@@ -1092,10 +1126,11 @@ def _enhanced_etf_strategy_html(latest, market_data, sectors_data=None, bt=None)
         <div class='strategy-head enhanced'>
             <span class='strategy-anchor'>
                 情绪周期: <b style='color:#f97316'>{emotion_phase}</b> ·
-                MRS <b>{mrs:.0f}</b> → 建议总仓位 <b style='color:#22c55e'>{total_pos}%</b>
+                MRS <b>{mrs:.0f}</b> → 宽行业池仓位 <b style='color:#22c55e'>{total_pos}%</b>
                 <span class='cb-sub'>(三层底仓 · 多因子共振 · 动态仓位)</span>
             </span>
         </div>
+        {budget_html}
         <div class='warehouse-layers'>
             <div class='layer zheng'>
                 <div class='layer-header'>
@@ -1144,8 +1179,13 @@ def _enhanced_etf_strategy_html(latest, market_data, sectors_data=None, bt=None)
         return _etf_strategy_html(latest, market_data, bt)
 
 
-def _sub_sector_strategy_html(sub_heatmap_data, market_data, wide_plans=None, sub_sectors_data=None):
-    """细分赛道ETF策略展示: 独立仓位池≤40%, 受宽行业闸门调节"""
+def _sub_sector_strategy_html(sub_heatmap_data, market_data, wide_plans=None,
+                              sub_sectors_data=None, plan_result=None, budget=None):
+    """细分赛道ETF策略展示: 独立仓位池≤40%, 受宽行业闸门调节
+
+    plan_result: 外部预计算的细分计划(已含总仓位预算协调), 传入则跳过内部计算
+    budget:      align_total_position_to_mrs输出的预算信息(头部展示)
+    """
     if not sub_heatmap_data or not market_data:
         return ""
 
@@ -1154,10 +1194,11 @@ def _sub_sector_strategy_html(sub_heatmap_data, market_data, wide_plans=None, su
 
     try:
         # 生成细分赛道交易计划(使用细分专用参数)
-        plan_result = enhanced_strategy.generate_sub_sector_plan(
-            sub_heatmap_data, market_data,
-            sub_sectors_data=sub_sectors_data,
-            wide_plans=wide_plans)
+        if plan_result is None:
+            plan_result = enhanced_strategy.generate_sub_sector_plan(
+                sub_heatmap_data, market_data,
+                sub_sectors_data=sub_sectors_data,
+                wide_plans=wide_plans)
 
         if plan_result.get('fallback'):
             return ""
@@ -1169,6 +1210,13 @@ def _sub_sector_strategy_html(sub_heatmap_data, market_data, wide_plans=None, su
         emotion_phase = plan_result['emotion_phase']
         mrs = plan_result['mrs']
         total_pos = plan_result['total_position_pct']
+
+        # 预算状态标注(细分池视角)
+        budget_note = ""
+        if budget:
+            budget_note = (f" · 总预算{budget['band_txt']}(≤{budget['cap_pct']:.0f}%), "
+                           f"两池合计{budget['total_pct']:.1f}%"
+                           f"{', 已缩放' if budget['scaled'] else ''}")
 
         # 按层级分组
         zheng_plans = [p for p in plans if p['warehouse_level'] == '正仓']
@@ -1235,8 +1283,8 @@ def _sub_sector_strategy_html(sub_heatmap_data, market_data, wide_plans=None, su
         <div class='strategy-head enhanced'>
             <span class='strategy-anchor'>
                 情绪周期: <b style='color:#f97316'>{emotion_phase}</b> ·
-                MRS <b>{mrs:.0f}</b> → 细分池建议总仓位 <b style='color:#22c55e'>{total_pos}%</b>
-                <span class='cb-sub'>(独立仓位池≤40% · 高弹性 · 宽行业闸门调节: {gate_txt})</span>
+                MRS <b>{mrs:.0f}</b> → 细分池仓位 <b style='color:#22c55e'>{total_pos}%</b>
+                <span class='cb-sub'>(独立仓位池≤40% · 高弹性 · 宽行业闸门调节: {gate_txt}{budget_note})</span>
             </span>
         </div>
         <div class='warehouse-layers'>
@@ -1436,27 +1484,62 @@ def generate_html(heatmap_data, market_data, idx_charts, idx_texts,
 
     # 尝试使用增强策略(三层底仓+多因子共振), 传入sectors_data用于计算缠论/量柱;
     # 模块缺失或运行异常时在函数内部自动fallback到经典MRS+生命周期策略
-    wide_plans = []
-    if _HAS_ENHANCED:
-        strategy_html = _enhanced_etf_strategy_html(heatmap_data['latest'] if heatmap_data else None,
-                                                    market_data, sectors_data, bt)
-        # 提取宽行业plans用于细分赛道闸门
+    # --- 先预计算两池计划, 再做总仓位预算协调(宽行业池+细分池合计对齐MRS建议仓位) ---
+    wide_result = None
+    if _HAS_ENHANCED and heatmap_data and market_data:
         try:
-            wide_result = enhanced_strategy.generate_plan_from_dashboard(
-                heatmap_data, market_data, sectors_data)
-            if not wide_result.get('fallback'):
-                wide_plans = wide_result.get('plans', [])
+            latest = heatmap_data['latest']
+            # latest补充板块最新收盘价(供缠论中枢位置/量柱支撑判断现价)
+            enriched = {name: dict(v) for name, v in latest.items()}
+            if sectors_data:
+                for name, v in enriched.items():
+                    kdf = sectors_data.get(name)
+                    if kdf is not None and len(kdf) > 0 and 'close' in kdf.columns:
+                        v['close'] = float(kdf['close'].iloc[-1])
+            params = {'use_enhanced': True, 'compute_chan_vol': True}
+            strategy = enhanced_strategy.EnhancedETFStrategy(params)
+            wide_result = strategy.generate_trading_plan(enriched, market_data,
+                                                         sectors_data)
         except Exception:
-            wide_plans = []
+            wide_result = None
+
+    wide_plans = []
+    if wide_result and not wide_result.get('fallback'):
+        wide_plans = wide_result.get('plans', [])
+
+    # 细分赛道计划(独立仓位池, 受宽行业闸门调节)
+    sub_result = None
+    if sub_heatmap_data and _HAS_ENHANCED and market_data:
+        try:
+            sub_result = enhanced_strategy.generate_sub_sector_plan(
+                sub_heatmap_data, market_data,
+                sub_sectors_data=sub_sectors_data, wide_plans=wide_plans)
+        except Exception:
+            sub_result = None
+
+    # 总仓位预算协调: 两池合计对齐MRS建议仓位区间(超限等比缩放)
+    budget = None
+    if _HAS_ENHANCED:
+        try:
+            budget = enhanced_strategy.align_total_position_to_mrs(wide_result, sub_result)
+        except Exception as e:
+            print(f"  总仓位预算协调失败: {e}")
+
+    if _HAS_ENHANCED:
+        strategy_html = _enhanced_etf_strategy_html(
+            heatmap_data['latest'] if heatmap_data else None,
+            market_data, sectors_data, bt,
+            plan_result=wide_result, budget=budget)
     else:
         strategy_html = _etf_strategy_html(heatmap_data['latest'] if heatmap_data else None,
                                            market_data, bt)
 
-    # 细分赛道策略(独立仓位池, 受宽行业闸门调节)
+    # 细分赛道策略展示
     sub_strategy_html = ""
     if sub_heatmap_data and _HAS_ENHANCED:
         sub_strategy_html = _sub_sector_strategy_html(
-            sub_heatmap_data, market_data, wide_plans, sub_sectors_data)
+            sub_heatmap_data, market_data, wide_plans, sub_sectors_data,
+            plan_result=sub_result, budget=budget)
 
     sector_table = _sector_table_html(heatmap_data['latest']) if heatmap_data else ""
     legend = _lifecycle_legend_html()
@@ -1567,6 +1650,7 @@ body {{ background: #0d1117; color: #c9d1d9; font-family: -apple-system, 'Micros
 .sub-title {{ font-size: 13px; font-weight: 600; color: #c9d1d9; margin: 20px 0 10px; padding-bottom: 6px; border-bottom: 1px dashed #30363d; }}
 .strategy-head {{ margin-bottom: 10px; font-size: 13px; color: #8b949e; line-height: 1.8; }}
 .strategy-anchor {{ background: #0d1117; border: 1px solid #21262d; border-radius: 6px; padding: 8px 12px; display: inline-block; }}
+.budget-line {{ background: linear-gradient(90deg, rgba(88,166,255,0.08), transparent); border: 1px solid #30363d; border-left: 3px solid #58a6ff; border-radius: 6px; padding: 7px 12px; margin-bottom: 10px; font-size: 12.5px; color: #8b949e; line-height: 1.7; }}
 .strategy-table {{ width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 6px; }}
 .strategy-table th, .strategy-table td {{ padding: 8px 10px; border-bottom: 1px solid #21262d; text-align: left; vertical-align: top; }}
 .strategy-table th {{ color: #8b949e; font-size: 12px; font-weight: 500; }}

@@ -105,7 +105,7 @@ def run_backtest(scored, mrs_series, params, use_margin_factor=True):
 
         # 2. 买入判定(收盘执行)
         room = params['max_sectors'] - len(holdings)
-        if room > 0 and pos_cap > 0.2:   # 市场环境太差不开新仓
+        if room > 0 and pos_cap >= 0.15:   # MRS空仓档(<30)不开新仓
             cands = []
             for name in sectors:
                 if name in holdings:
@@ -131,7 +131,9 @@ def run_backtest(scored, mrs_series, params, use_margin_factor=True):
                                'exit_price': None,
                                'ret': None})
 
-        # 3. 当日组合收益 = 持仓板块当日收益均值 × 仓位系数
+        # 3. 当日组合收益 = 持仓板块当日收益均值 × MRS总仓位系数
+        # 持仓内板块等权分配; 总仓位严格按MRS映射的pos_cap(满仓=1.0),
+        # 剩余资金(1-pos_cap)视为现金不产生收益
         if holdings:
             prev_d = all_dates[i - 1]
             day_rets = []
@@ -140,8 +142,7 @@ def run_backtest(scored, mrs_series, params, use_margin_factor=True):
                 if d in g.index and prev_d in g.index and 'close' in g.columns:
                     day_rets.append(g.loc[d, 'close'] / g.loc[prev_d, 'close'] - 1)
             if day_rets:
-                # pos_cap<0.6时不开新仓,持仓收益也按仓位比例折算
-                daily_ret = float(np.mean(day_rets)) * min(1.0, pos_cap / 0.6)
+                daily_ret = float(np.mean(day_rets)) * pos_cap
         equity.append(equity[-1] * (1 + daily_ret))
         eq_dates.append(d)
 
@@ -155,11 +156,18 @@ def run_backtest(scored, mrs_series, params, use_margin_factor=True):
                 if sell_trades else 0.0)
 
     # 持仓详情(含买入日/买入价/当前价/浮盈/仓位权重)
+    # 权重 = MRS总仓位上限pos_cap / 持仓数; 合计权重 = pos_cap * 100%,
+    # 严格对齐MRS建议仓位(MRS防守期合计20-40%, 进攻期合计80-100%)
     holdings_detail = []
+    total_pos_pct = 0.0  # 总仓位%(合计权重)
     if holdings:
         last_d = all_dates[-1]
         n_held = len(holdings)
-        weight = round(1.0 / n_held * 100, 1) if n_held else 0
+        last_mrs = mrs_map.get(last_d, 50.0)
+        last_pos_cap = _mrs_to_position(last_mrs) if mrs_map else 1.0
+        # 单只权重 = 总仓位 / 持仓数(持仓内等权, 剩余现金)
+        per_weight = round(last_pos_cap / n_held * 100, 1) if n_held else 0
+        total_pos_pct = round(per_weight * n_held, 1)
         for name, info in holdings.items():
             g = panel[name]
             cur_price = float(g.loc[last_d, 'close']) if last_d in g.index else info['price']
@@ -170,7 +178,7 @@ def run_backtest(scored, mrs_series, params, use_margin_factor=True):
                 'entry_price': round(float(info['price']), 2),
                 'current_price': round(cur_price, 2),
                 'return': ret_pct,
-                'weight': weight,
+                'weight': per_weight,
             })
         holdings_detail.sort(key=lambda x: x['return'], reverse=True)
 
@@ -184,6 +192,8 @@ def run_backtest(scored, mrs_series, params, use_margin_factor=True):
         'max_dd': round(dd * 100, 2),
         'holdings_now': list(holdings.keys()),
         'holdings_detail': holdings_detail,
+        'total_pos_pct': total_pos_pct,  # 当前持仓总仓位%(对齐MRS建议)
+        'last_mrs': last_mrs if holdings else None,
     }
 
 
