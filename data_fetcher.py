@@ -363,18 +363,46 @@ def get_margin_data(days=60):
     cache = _load_cache("margin_history.csv")
     new_parts = []
 
-    # 沪市两融
-    try:
-        end_date = datetime.now().strftime("%Y%m%d")
-        start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y%m%d")
-        df_sh = ak.stock_margin_sse(start_date=start_date, end_date=end_date)
-        if df_sh is not None and len(df_sh) > 0:
-            df_sh['date'] = pd.to_datetime(df_sh['信用交易日期'], format='%Y%m%d')
-            df_sh['balance'] = pd.to_numeric(df_sh['融资余额'], errors='coerce')
-            new_parts.append(df_sh[['date', 'balance']].copy())
-            print(f"  沪市两融: {len(df_sh)}条")
-    except Exception as e:
-        print(f"  沪市两融获取失败: {e}")
+    # 沪市两融: 逐日汇总 stock_margin_detail_sse (批量接口 stock_margin_sse 已多次返回不全)
+    # 策略: 每次从 15 天前开始逐日拉, 覆盖缓存可能遗漏的数据
+    # 若逐日接口全部失败, 回退到 stock_margin_sse 批量接口 (start_date 必须近)
+    sh_rows = []
+    today = datetime.now().date()
+    start_try = today - timedelta(days=15)
+    cur = start_try
+    trade_days_checked = 0
+    while cur <= today and trade_days_checked < 20:
+        if cur.weekday() < 5:  # 跳过周末
+            trade_days_checked += 1
+            try:
+                ds = cur.strftime('%Y%m%d')
+                ddf = ak.stock_margin_detail_sse(date=ds)
+                if ddf is not None and len(ddf) > 0:
+                    bal = pd.to_numeric(ddf['融资余额'], errors='coerce').sum()
+                    if bal > 0:
+                        sh_rows.append({'date': pd.Timestamp(cur), 'balance': bal})
+            except Exception:
+                pass  # 节假日或当天未出数据, 跳过
+        cur += timedelta(days=1)
+
+    if sh_rows:
+        df_sh = pd.DataFrame(sh_rows)
+        new_parts.append(df_sh)
+        print(f"  沪市两融(逐日): {len(df_sh)}个交易日, 最新={df_sh['date'].max().strftime('%Y-%m-%d')}")
+    else:
+        # 回退: stock_margin_sse 批量接口 (start_date 必须靠近今天, 否则接口只返回旧数据)
+        try:
+            end_date = datetime.now().strftime("%Y%m%d")
+            # 只往前查 30 天, 避免接口因起始日过远而返回陈旧数据
+            start_date = (datetime.now() - timedelta(days=30)).strftime("%Y%m%d")
+            df_sh = ak.stock_margin_sse(start_date=start_date, end_date=end_date)
+            if df_sh is not None and len(df_sh) > 0:
+                df_sh['date'] = pd.to_datetime(df_sh['信用交易日期'], format='%Y%m%d')
+                df_sh['balance'] = pd.to_numeric(df_sh['融资余额'], errors='coerce')
+                new_parts.append(df_sh[['date', 'balance']].copy())
+                print(f"  沪市两融(回退批量): {len(df_sh)}条, 最新={df_sh['date'].max().strftime('%Y-%m-%d')}")
+        except Exception as e:
+            print(f"  ⚠ 沪市两融全部接口失败: {e}")
 
     # 深市两融(改用macro_china_market_margin_sz批量接口, 旧逐日接口已失效)
     try:

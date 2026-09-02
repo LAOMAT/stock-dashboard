@@ -106,6 +106,117 @@ def fetch_all_data():
     return sectors_data, index_data, margin_data, global_indices, cyb_data, kcb_data, sub_sectors_data, us_treasury_data
 
 
+def _latest_date(df_or_series, col='date'):
+    """从 DataFrame/dict/DataFrame-dict 中提取最新日期, 返回 pd.Timestamp 或 None"""
+    if df_or_series is None:
+        return None
+    if isinstance(df_or_series, pd.DataFrame):
+        if len(df_or_series) == 0 or col not in df_or_series.columns:
+            return None
+        return pd.to_datetime(df_or_series[col].iloc[-1])
+    if isinstance(df_or_series, dict):
+        # dict of DataFrame -> 取所有 DataFrame 里最新的那个
+        best = None
+        for v in df_or_series.values():
+            d = _latest_date(v, col)
+            if d is not None and (best is None or d > best):
+                best = d
+        return best
+    return None
+
+
+def check_data_freshness(sectors_data, index_data, margin_data,
+                         global_indices, cyb_data, kcb_data,
+                         sub_sectors_data, us_treasury_data):
+    """
+    数据新鲜度校验: 以上证指数最新日期为锚点, 检查各数据源是否及时更新.
+    输出 ✅/⚠/❌ 状态, 有严重陈旧时提示用户.
+
+    Returns: (anchor_date, warnings_list)
+    """
+    print("\n" + "=" * 60)
+    print("步骤1x: 数据新鲜度自检")
+    print("=" * 60)
+
+    anchor = _latest_date(index_data)  # 上证指数作为 A 股锚点
+    if anchor is None:
+        print("  ❌ 上证指数无数据! 无法确定基准日")
+        return None, []
+    anchor_d = anchor.date()
+    print(f"  A股锚点(上证指数)最新日期: {anchor_d}")
+
+    # 检查项列表: (数据源名, 最新日期, 允许最晚比锚点差多少天, 说明)
+    checks = []
+
+    # 行业板块 (28个)
+    sec_dates = []
+    for name, df in sectors_data.items():
+        d = _latest_date(df)
+        if d is not None:
+            sec_dates.append((name, d))
+    if sec_dates:
+        sec_latest = max(d for _, d in sec_dates)
+        sec_oldest = min(d for _, d in sec_dates)
+        checks.append(('行业板块(28个)', sec_latest, 1,
+                       f'最早{sec_oldest.date()} 最新{sec_latest.date()}'))
+    else:
+        checks.append(('行业板块', None, 0, '全部为空'))
+
+    # 创业板/科创50
+    checks.append(('创业板指', _latest_date(cyb_data), 1, ''))
+    checks.append(('科创50', _latest_date(kcb_data), 1, ''))
+
+    # 细分ETF
+    sub_latest = _latest_date(sub_sectors_data)
+    checks.append(('细分赛道ETF(18个)', sub_latest, 1, ''))
+
+    # 两融 (T+1, 允许比锚点晚 0~1 天, 即差值在 -1~0 之间正常)
+    mar_latest = _latest_date(margin_data)
+    checks.append(('沪深两融(T+1)', mar_latest, 2,
+                   '交易所次一交易日公布'))
+
+    # 全球指数 (美股, 通常比 A 股晚 0~1 个自然日, 但有时同步)
+    for name, gdf in (global_indices or {}).items():
+        checks.append((f'全球指数-{name}', _latest_date(gdf), 2, ''))
+
+    # 美债 (自然日 T+1)
+    checks.append(('美债收益率曲线', _latest_date(us_treasury_data), 2,
+                   '自然日 T+1 发布'))
+
+    # 判定 & 输出
+    critical = []
+    warnings = []
+    ok_count = 0
+    for name, latest, max_gap, note in checks:
+        if latest is None:
+            print(f"  ❌ {name}: 无数据 {note}")
+            critical.append((name, '无数据'))
+            continue
+        diff = (anchor - latest).days  # latest 比 anchor 早几天
+        if diff < 0:
+            diff = 0  # latest 比 anchor 晚 -> 数据更新, 视为 0 差距
+        if diff == 0:
+            print(f"  ✅ {name}: {latest.date()} (同步) {note}")
+            ok_count += 1
+        elif diff <= max_gap:
+            print(f"  ⚠ {name}: {latest.date()} (落后{diff}天, 允许≤{max_gap}天) {note}")
+            warnings.append((name, diff, max_gap))
+        else:
+            print(f"  ❌ {name}: {latest.date()} (落后{diff}天, 允许≤{max_gap}天) {note}")
+            critical.append((name, f'落后{diff}天(阈值{max_gap})'))
+
+    total = len(checks)
+    print(f"\n  汇总: ✅{ok_count} / ⚠{len(warnings)} / ❌{len(critical)} (共{total}项)")
+
+    if critical:
+        print("\n  ⚠⚠⚠ 以下数据源严重陈旧, 请检查数据源接口或等待盘后更新:")
+        for name, reason in critical:
+            print(f"     - {name}: {reason}")
+        print()
+
+    return anchor_d, {'warnings': warnings, 'critical': critical}
+
+
 def compute_sector_heatmap(sectors_data, num_days=18):
     """
     用V2横截面逻辑计算行业热力图数据
@@ -2546,6 +2657,11 @@ def main():
     if not sectors_data:
         print("\n错误: 无法获取行业板块数据，请检查网络连接")
         return
+
+    # --- 数据新鲜度校验 ---
+    check_data_freshness(sectors_data, index_data, margin_data,
+                         global_indices, cyb_data, kcb_data,
+                         sub_sectors_data, us_treasury_data)
 
     # --- 板块热力图 + 横截面得分 ---
     heatmap_data = compute_sector_heatmap(sectors_data, num_days=18)
